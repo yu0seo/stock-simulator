@@ -17,22 +17,74 @@ class Market:
         self.lock = asyncio.Lock()
         self.request_lock = asyncio.Lock()
 
-    async def kis(self, path, tr_id, params):
+    async def toss(self, path, params):
+        """Server-side read-only Toss adapter. Never calls account or order APIs."""
         async with self.request_lock:
             async with httpx.AsyncClient(timeout=15) as client:
-                if time.time() >= self.token_until:
-                    r = await client.post(settings.kis_base_url + '/oauth2/tokenP', json={'grant_type':'client_credentials','appkey':settings.kis_app_key,'appsecret':settings.kis_app_secret})
-                    r.raise_for_status()
-                    data = r.json()
-                    self.token = data['access_token']
-                    self.token_until = time.time() + int(data.get('expires_in', 86400)) - 120
-                r = await client.get(settings.kis_base_url + path, params=params, headers={'authorization':f'Bearer {self.token}','appkey':settings.kis_app_key,'appsecret':settings.kis_app_secret,'tr_id':tr_id,'custtype':'P'})
-                r.raise_for_status()
-                data = r.json()
-                if data.get('rt_cd') != '0':
-                    raise HTTPException(502, '한국투자증권에서 시세를 가져오지 못했습니다. 키의 권한과 API 이용 상태를 확인해주세요.')
-                await asyncio.sleep(0.12)
-                return data
+                try:
+                    for attempt in range(2):
+                        if time.time() >= self.token_until:
+                            r = await client.post(settings.toss_base_url.rstrip('/') + '/oauth2/token', data={'grant_type':'client_credentials','client_id':settings.toss_client_id,'client_secret':settings.toss_client_secret})
+                            self.check_response(r)
+                            data = r.json()
+                            token = data['access_token']
+                            expires = int(data['expires_in'])
+                            if not isinstance(token,str) or not token or expires<=0:
+                                raise ValueError('Invalid token response')
+                            self.token = token
+                            self.token_until = time.time() + max(1, expires-min(120,expires/10))
+                        r = await client.get(settings.toss_base_url.rstrip('/') + path, params=params, headers={'authorization':f'Bearer {self.token}'})
+                        if r.status_code==401 and attempt==0:
+                            self.token_until=0
+                            continue
+                        self.check_response(r)
+                        data=r.json()
+                        if not isinstance(data,dict) or 'result' not in data or 'error' in data:
+                            raise ValueError('Invalid Toss envelope')
+                        return data['result']
+                except (httpx.HTTPError,KeyError,ValueError,TypeError):
+                    raise HTTPException(502,'토스증권 시세 연결 또는 응답을 확인할 수 없어요. 샘플 시세로 대체하지 않습니다.') from None
+                finally:
+                    # Shared conservative pacing across API groups, including charts.
+                    await asyncio.sleep(0.25)
+
+    @staticmethod
+    def check_response(response):
+        messages={400:'토스증권 인증정보 또는 요청 형식을 확인해주세요.',401:'토스증권 인증이 만료됐거나 인증정보가 올바르지 않아요.',403:'토스증권 Open API의 허용 IP 등록과 이용 권한을 확인해주세요.',429:'토스증권 API 요청 한도에 도달했어요. 잠시 후 다시 시도해주세요.'}
+        if response.is_error:
+            raise HTTPException(502,messages.get(response.status_code,'토스증권 시세 서버에 연결하지 못했어요.'))
+
+    @staticmethod
+    def timestamp(value):
+        parsed=datetime.fromisoformat(value)
+        if parsed.tzinfo is None: raise ValueError('Missing timestamp timezone')
+        return parsed.astimezone(KST)
+
+    @classmethod
+    def price(cls,value):
+        result=cls.number(value)
+        if result is None or result<=0 or not result.is_integer():
+            raise ValueError('Invalid KRW price')
+        return int(result)
+
+    async def candles(self,symbol):
+        key='candles:'+symbol
+        if self.cache.get(key+':until',0)>time.time(): return self.cache[key]
+        result=await self.toss('/api/v1/candles',{'symbol':symbol,'interval':'1d','count':100,'adjusted':'false'})
+        try:
+            rows=result['candles']
+            normalized=[]
+            for row in rows:
+                if row['currency']!='KRW': raise ValueError('Unsupported currency')
+                volume=self.number(row['volume'])
+                if volume is None or volume<0: raise ValueError('Invalid volume')
+                normalized.append({'date':self.timestamp(row['timestamp']).date().isoformat(),'value':self.price(row['closePrice']),'volume':volume})
+            normalized.sort(key=lambda p:p['date'])
+        except (KeyError,TypeError,ValueError):
+            raise HTTPException(502,'토스증권 차트 응답을 확인할 수 없어요.') from None
+        self.cache[key]=normalized
+        self.cache[key+':until']=time.time()+60
+        return normalized
 
     async def quotes(self):
         async with self.lock:
@@ -40,37 +92,48 @@ class Market:
                 return self.cache['quotes']
             now = datetime.now(KST)
             rows = []
+            live={}
+            if settings.live_market:
+                result=await self.toss('/api/v1/prices',{'symbols':','.join(BY_SYMBOL)})
+                try:
+                    live={q['symbol']:q for q in result}
+                    if not set(BY_SYMBOL).issubset(live): raise ValueError('Missing quote')
+                except (KeyError,TypeError,ValueError):
+                    raise HTTPException(502,'토스증권에서 일부 종목의 시세가 누락됐어요.') from None
             for stock in STOCKS:
                 row = {k:stock[k] for k in ['symbol','name','sector','color']}
                 if settings.live_market:
                     try:
-                        d = (await self.kis('/uapi/domestic-stock/v1/quotations/inquire-price','FHKST01010100',{'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':stock['symbol']}))['output']
-                        row.update(price=int(d['stck_prpr']), change=float(d['prdy_ctrt']), per=self.number(d.get('per')), pbr=self.number(d.get('pbr')), volume=int(d.get('acml_vol',0)), halted=d.get('temp_stop_yn')=='Y')
+                        q=live[stock['symbol']]
+                        if q['currency']!='KRW': raise ValueError('Unsupported currency')
+                        price=self.price(q['lastPrice'])
+                        quote_time=q.get('timestamp')
+                        quote_day=self.timestamp(quote_time).date() if quote_time is not None else now.date()
+                        candles=await self.candles(stock['symbol'])
+                        previous=[p for p in candles if p['date']<quote_day.isoformat()]
+                        previous_close=previous[-1]['value'] if previous else None
+                        row.update(price=price,change=round((price/previous_close-1)*100,4) if previous_close else None,per=None,pbr=None,quote_at=quote_time)
                     except HTTPException:
                         raise
-                    except (httpx.HTTPError, KeyError, ValueError):
+                    except (httpx.HTTPError, KeyError, ValueError,TypeError):
                         raise HTTPException(502, '실제 시세 연결에 실패했습니다. 샘플 시세로 주문을 처리하지 않습니다.')
                 else:
                     row.update({k:stock[k] for k in ['price','change','per','pbr']}, volume=0)
-                row.update(source='kis' if settings.live_market else 'sample', updated_at=now.isoformat())
+                row.update(source='toss' if settings.live_market else 'sample', updated_at=now.isoformat())
                 rows.append(row)
             self.cache.update(quotes=rows, quotes_until=time.time()+10)
             return rows
 
     @staticmethod
     def number(value):
-        try: return float(value) if value not in ('', None) else None
+        try:
+            result=float(value) if value not in ('', None) else None
+            return result if result is not None and math.isfinite(result) else None
         except (ValueError, TypeError): return None
 
     async def chart(self, symbol):
         if settings.live_market:
-            now = datetime.now(KST)
-            try:
-                d = await self.kis('/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice','FHKST03010100',{'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':symbol,'FID_INPUT_DATE_1':(now-timedelta(days=110)).strftime('%Y%m%d'),'FID_INPUT_DATE_2':now.strftime('%Y%m%d'),'FID_PERIOD_DIV_CODE':'D','FID_ORG_ADJ_PRC':'0'})
-                points = [{'date':p['stck_bsop_date'],'value':int(p['stck_clpr'])} for p in reversed(d['output2']) if p.get('stck_clpr')]
-                return {'source':'kis','points':points}
-            except (httpx.HTTPError, KeyError, ValueError):
-                raise HTTPException(502, '차트 조회에 실패했습니다.')
+            return {'source':'toss','points':[{'date':p['date'],'value':p['value']} for p in await self.candles(symbol)]}
         price = BY_SYMBOL[symbol]['price']
         points = [{'date':(datetime.now(KST)-timedelta(days=59-i)).strftime('%Y-%m-%d'),'value':round(price*(0.91+0.09*i/59+0.018*math.sin(i*0.65)+0.008*math.sin(i*1.9)))} for i in range(60)]
         points[-1]['value'] = price
@@ -110,14 +173,55 @@ class Market:
         now=datetime.now(KST)
         return now.weekday()<5 and (9,0) <= (now.hour,now.minute) < (15,30)
 
-    async def check_trading_day(self, symbol):
+    async def regular_session(self):
+        today=datetime.now(KST).date().isoformat()
+        key='calendar:'+today
+        if self.cache.get(key+':until',0)>time.time(): return self.cache[key]
+        result=await self.toss('/api/v1/market-calendar/KR',{'date':today})
         try:
-            d=await self.kis('/uapi/domestic-stock/v1/quotations/inquire-daily-price','FHKST01010400',{'FID_COND_MRKT_DIV_CODE':'J','FID_INPUT_ISCD':symbol,'FID_PERIOD_DIV_CODE':'D','FID_ORG_ADJ_PRC':'0'})
-            today=datetime.now(KST).strftime('%Y%m%d')
-            latest=d['output'][0]
-            if latest['stck_bsop_date']!=today or int(latest.get('acml_vol',0))<=0:
-                raise HTTPException(400,'오늘 거래가 확인되지 않는 종목이에요. 휴장일 또는 거래정지 여부를 확인해주세요.')
-        except (httpx.HTTPError,KeyError,ValueError,IndexError):
-            raise HTTPException(502,'거래일을 확인할 수 없어 주문을 중단했어요.')
+            day=result['today']
+            if day['date']!=today: raise ValueError('Unexpected calendar date')
+            integrated=day['integrated']
+            regular=integrated['regularMarket'] if integrated is not None else None
+            session=None
+            if regular is not None:
+                start=self.timestamp(regular['startTime'])
+                end=self.timestamp(regular['endTime'])
+                if start.date().isoformat()!=today or end<=start: raise ValueError('Invalid session')
+                session=(start,end)
+        except (KeyError,TypeError,ValueError):
+            raise HTTPException(502,'토스증권 장 운영 정보를 확인할 수 없어요.') from None
+        self.cache[key]=session
+        self.cache[key+':until']=time.time()+60
+        return session
+
+    async def trading_open(self):
+        if not settings.live_market: return self.is_open()
+        session=await self.regular_session()
+        return bool(session and session[0]<=datetime.now(KST)<session[1])
+
+    async def check_trading_day(self,symbol,quote):
+        if not await self.trading_open():
+            raise HTTPException(400,'휴장일 또는 정규장 운영 시간이 아니에요.')
+        result=await self.toss('/api/v1/stocks',{'symbols':symbol})
+        try:
+            info=next(s for s in result if s['symbol']==symbol)
+            detail=info['koreanMarketDetail']
+            if not isinstance(detail,dict): raise ValueError('Missing trading status')
+            krx=detail['krxTradingSuspended']
+            nxt=detail['nxtTradingSuspended']
+            supported=detail['nxtSupported']
+            if not isinstance(krx,bool) or not isinstance(supported,bool) or (supported and not isinstance(nxt,bool)):
+                raise ValueError('Missing trading status')
+            halted=krx and (not supported or nxt)
+            if info['status']!='ACTIVE' or halted:
+                raise HTTPException(400,'상장 상태가 비활성이거나 거래정지된 종목이에요.')
+            # Reject old/null quotes rather than fill orders at an inactive price.
+            stamp=self.timestamp(quote['quote_at'])
+            age=(datetime.now(KST)-stamp).total_seconds()
+            if age < -60 or age > 120:
+                raise HTTPException(400,'최근 2분 이내의 시세가 없어 주문을 중단했어요.')
+        except (KeyError,TypeError,ValueError,StopIteration):
+            raise HTTPException(502,'종목 거래 상태 또는 시세 시각을 확인할 수 없어 주문을 중단했어요.') from None
 
 market=Market()

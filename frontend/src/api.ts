@@ -1,5 +1,5 @@
 export type User = {id:string;nickname:string};
-export type Stock = {symbol:string;name:string;sector:string;color:string;price:number;change:number;per:number|null;pbr:number|null;source:string;updated_at:string};
+export type Stock = {symbol:string;name:string;sector:string;color:string;price:number;change:number|null;per:number|null;pbr:number|null;source:string;updated_at:string};
 export type Config = {market_mode:string;auth_mode:string;financial_mode:string;initial_capital:number;game_days:number;market_open:boolean;poll_seconds:number;difficulties:Record<string,{label:string;loan:number;rate:number}>};
 export type Position = {symbol:string;name:string;quantity:number;average:number;price:number;value:number;profit:number;color:string};
 export type Trade = {id:string;symbol:string;side:string;quantity:number;price:number;amount:number;created_at:number};

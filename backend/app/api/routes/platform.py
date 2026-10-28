@@ -37,7 +37,7 @@ class Repayment(BaseModel):
 class Answer(BaseModel):
     answer: int = Field(ge=0,le=2,strict=True)
 
-def source(): return 'kis' if settings.live_market else 'sample'
+def source(): return 'toss' if settings.live_market else 'sample'
 
 async def current_user(request:Request,response:Response):
     return await store.user(request,response)
@@ -51,7 +51,7 @@ def throttle(request):
 
 @router.get('/config')
 async def config():
-    return {'market_mode':source(),'auth_mode':'supabase' if settings.cloud_auth else 'local','financial_mode':'opendart' if settings.opendart_api_key else 'sample','initial_capital':settings.initial_capital,'game_days':settings.game_days,'difficulties':DIFFICULTIES,'market_open':market.is_open(),'poll_seconds':15}
+    return {'market_mode':source(),'auth_mode':'supabase' if settings.cloud_auth else 'local','financial_mode':'opendart' if settings.opendart_api_key else 'sample','initial_capital':settings.initial_capital,'game_days':settings.game_days,'difficulties':DIFFICULTIES,'market_open':await market.trading_open(),'poll_seconds':15}
 
 @router.post('/auth/signup')
 async def signup(body:Credentials,request:Request,response:Response):
@@ -72,7 +72,7 @@ async def logout(request:Request,response:Response):
     return {'ok':True}
 
 @router.get('/market')
-async def quotes(): return {'stocks':await market.quotes(),'source':source(),'market_open':market.is_open()}
+async def quotes(): return {'stocks':await market.quotes(),'source':source(),'market_open':await market.trading_open()}
 
 def check_symbol(symbol):
     if symbol not in BY_SYMBOL: raise HTTPException(404,'지원하지 않는 종목이에요.')
@@ -91,15 +91,15 @@ async def financials(symbol:str):
 async def similar(symbol:str):
     check_symbol(symbol)
     # Standardized feature vectors + deterministic K-means; demo sample is labeled.
-    quotes=await market.quotes()
     features=[]
-    for stock,q in zip(STOCKS,quotes):
+    for stock in STOCKS:
         f=await market.financials(stock['symbol'])
-        vals=[q['per'],q['pbr'],f['debt']]
-        if all(v is not None and math.isfinite(v) and v>0 for v in vals):
-            features.append((stock['symbol'],[math.log1p(v) for v in vals]))
+        values=[f['revenue'],f['profit'],f['equity'],f['debt']]
+        if all(v is not None and math.isfinite(v) for v in values) and f['revenue']>0 and f['equity']>0 and f['debt']>=0:
+            vals=[f['profit']/f['revenue']*100,f['profit']/f['equity']*100,f['debt']]
+            features.append((stock['symbol'],[math.copysign(math.log1p(abs(v)),v) for v in vals]))
     if len(features)<4 or symbol not in dict(features):
-        return {'items':[],'source':source(),'method':'비교 가능한 재무지표가 부족해요.'}
+        return {'items':[],'source':'live' if settings.opendart_api_key else 'sample','method':'비교 가능한 재무지표가 부족해요.'}
     means=[sum(v[j] for _,v in features)/len(features) for j in range(3)]
     scales=[(sum((v[j]-means[j])**2 for _,v in features)/len(features))**.5 or 1 for j in range(3)]
     vectors={s:[(v[j]-means[j])/scales[j] for j in range(3)] for s,v in features}
@@ -114,7 +114,7 @@ async def similar(symbol:str):
             group=[v for s,v in vectors.items() if labels[s]==i]
             if group: centers[i]=[sum(v[j] for v in group)/len(group) for j in range(3)]
     candidates=sorted([s for s in vectors if s!=symbol],key=lambda s:(labels[s]!=labels[symbol],dist(vectors[s],vectors[symbol])))[:3]
-    return {'items':[{'symbol':s,'name':BY_SYMBOL[s]['name'],'same_cluster':labels[s]==labels[symbol],'distance':round(dist(vectors[s],vectors[symbol])**.5,2)} for s in candidates],'source':'live' if settings.live_market and settings.opendart_api_key else 'sample','method':'PER·PBR·부채비율 표준화 / K-means 3개 군집 / 8개 기업 내 비교'}
+    return {'items':[{'symbol':s,'name':BY_SYMBOL[s]['name'],'same_cluster':labels[s]==labels[symbol],'distance':round(dist(vectors[s],vectors[symbol])**.5,2)} for s in candidates],'source':'live' if settings.opendart_api_key else 'sample','method':'순이익률·기말자본 대비 이익률·부채비율 표준화 / K-means 3개 군집 / 8개 기업 내 비교 (기말자본 대비 이익률은 ROE와 다름)'}
 
 @router.get('/portfolio')
 async def portfolio(user=Depends(current_user)):
@@ -150,13 +150,11 @@ async def order(body:Order,user=Depends(current_user)):
     a,version=await active_account(user)
     quotes=await market.quotes()
     if summary(a,quotes)['net_assets']<=0: raise HTTPException(400,'순자산이 0원 이하예요. 여정 결과를 확인해주세요.')
-    if settings.live_market and not market.is_open(): raise HTTPException(400,'정규장 시간(평일 09:00–15:30)에 주문할 수 있어요.')
     q=next(q for q in quotes if q['symbol']==body.symbol)
     if q['price']<=0: raise HTTPException(400,'유효한 주문 가격이 없어요.')
     if settings.live_market:
-        if q.get('halted'): raise HTTPException(400,'거래정지된 종목이에요.')
-        await market.check_trading_day(body.symbol)
-    # No client-provided price is used. KIS never receives an actual order.
+        await market.check_trading_day(body.symbol,q)
+    # No client-provided price is used. Toss never receives an actual order.
     trade(a,body.symbol,body.side,body.quantity,q['price'])
     await store.save(user['id'],a,version)
     return {'message':'모의 주문이 체결됐어요.','price':q['price']}

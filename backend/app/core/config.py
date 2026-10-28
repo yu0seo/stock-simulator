@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     supabase_url: str = ''
     supabase_anon_key: str = ''
     supabase_service_role_key: str = ''
-    kis_app_key: str = ''
-    kis_app_secret: str = ''
-    kis_base_url: str = 'https://openapi.koreainvestment.com:9443'
+    toss_client_id: str = ''
+    toss_client_secret: str = ''
+    toss_base_url: str = 'https://openapi.tossinvest.com'
     opendart_api_key: str = ''
     dart_business_year: str = ''
     initial_capital: int = 10_000_000
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     @property
     def live_market(self):
-        return self.data_mode != 'demo' and bool(self.kis_app_key and self.kis_app_secret)
+        return self.data_mode != 'demo' and bool(self.toss_client_id and self.toss_client_secret)
 
     @property
     def cloud_auth(self):

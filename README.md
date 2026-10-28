@@ -2,7 +2,7 @@
 
 투자에는 배움이, 선택에는 대가가. 무리한 빚투의 부담을 실제 시간에 따라 체험하는 투자 학습 웹 앱입니다.
 
-React + TypeScript + Vite 프론트엔드와 Python FastAPI 백엔드로 구성했습니다. 키가 없으면 로컬 회원가입·SQLite 저장·고정 샘플 가격으로 전체 흐름을 실행할 수 있습니다. 서비스별 키를 연결하면 한국투자증권 시세, OpenDART 재무제표, Supabase Auth/PostgreSQL을 사용합니다. 실제 매매 주문 API는 호출하지 않습니다.
+React + TypeScript + Vite 프론트엔드와 Python FastAPI 백엔드로 구성했습니다. 키가 없으면 로컬 회원가입·SQLite 저장·고정 샘플 가격으로 전체 흐름을 실행할 수 있습니다. 서비스별 키를 연결하면 토스증권 시세, OpenDART 재무제표, Supabase Auth/PostgreSQL을 사용합니다. 실제 매매 주문 API는 호출하지 않습니다.
 
 ## 실행
 
@@ -51,22 +51,26 @@ pnpm run build
 
 닉네임은 가입 트리거로 고유하게 저장됩니다. 보유 주식·예수금·거래 내역·학습 이력은 `accounts.data` JSONB에 저장하며, 서버 전용 함수의 버전 비교로 동시 주문 충돌을 막습니다. 클라이언트는 잔액·보상·수익률을 직접 수정할 수 없습니다. 랭킹에는 닉네임만 노출하며 이메일과 비밀번호를 공개하지 않습니다. 로컬 계정은 Supabase로 자동 이전하지 않으므로 연결 후 새로 가입합니다.
 
-### 2. 한국투자증권 실제 시세
+### 2. 토스증권 실제 시세
 
-1. 한국투자증권 Open API 이용 신청 후 **실전 환경 시세 조회 권한**이 있는 앱 키와 앱 시크릿을 발급받습니다.
-2. `KIS_APP_KEY`, `KIS_APP_SECRET`을 입력합니다. 기본 `KIS_BASE_URL`은 `https://openapi.koreainvestment.com:9443`입니다. 모의투자용 키와 혼용하지 마세요.
+1. 토스증권 WTS의 설정 > Open API에서 `client_id`와 `client_secret`을 발급받고, 허용 IP 관리에 **서버를 실행하는 PC의 공인 IP**를 등록합니다. IP 미등록 시 403 오류가 발생합니다.
+2. `.env`의 `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`을 채웁니다. `TOSS_BASE_URL`은 기본값 `https://openapi.tossinvest.com`을 그대로 사용합니다. `KIS_*` 환경변수는 사용하지 않습니다.
 3. 서버를 재시작하면 화면에 실제 시세 모드가 표시됩니다. 가격은 15초 폴링, 공유 캐시는 10초입니다. WebSocket 틱 스트리밍은 아닙니다.
-4. 샘플 계정으로 로그인 중이었다면 설정에서 **새 여정 시작**으로 실제 시세 계정을 만듭니다. 이전 샘플 거래·보유·보상은 초기화됩니다.
+4. 샘플 계정 또는 이전 한국투자증권 계정으로 로그인 중이었다면 설정에서 **새 여정 시작**으로 토스 시세 계정을 만듭니다. 확인 후 시작하면 이전 거래·보유·보상은 초기화됩니다. 기존 계정 데이터를 자동 삭제하거나 다른 공급자 계정으로 재분류하지 않습니다.
 
-선정 국내주식 8개를 지원합니다. 장 시간은 한국 시간 평일 09:00–15:30이며, 주문 시 최근 일별 시세의 영업일·거래량 및 거래정지를 추가 확인합니다. 휴장일·거래정지·API 오류 때는 주문을 거절합니다. 외부 연결 실패 시 샘플 가격으로 대체 체결하지 않습니다. 화면의 장 상태 뱃지는 시간 기준이므로 휴장 여부는 주문 시 검증합니다.
+선정 국내주식 8개를 `/api/v1/prices`로 일괄 조회합니다. 가격은 국내 통합 시세이고, 모의 주문은 `/api/v1/market-calendar/KR`의 당일 통합 정규장 세션에서만 허용합니다. 휴장일과 개장 시간 변경도 해당 응답을 따릅니다. 프리·애프터마켓 주문은 지원하지 않습니다. 주문 시 `/api/v1/stocks`의 상장·거래정지 상태와 최근 2분 이내의 시세 시각을 확인합니다. 거래 가능 여부가 불확실하거나 연결이 실패하면 주문을 거절하며 샘플로 대체 체결하지 않습니다.
+
+일별 차트는 `/api/v1/candles`의 `interval=1d`, `adjusted=false` 데이터를 시간순으로 정렬합니다. 전일 대비 등락률은 조회한 현재가와 시세일 이전의 가장 최근 일봉 종가 (시세 시각이 없으면 오늘 이전 종가)로 계산합니다. 일봉 캐시는 60초이며, 전 거래일 종가가 없으면 등락률을 ‘—’로 표시합니다. 현재가의 공급자 시각이 누락되면 조회는 가능하지만 주문을 허용하지 않습니다. 기업행동 발생일에는 미수정 종가 비교로 등락률이 크게 나타날 수 있습니다.
+
+접근 토큰은 form-urlencoded Client Credentials 방식으로 서버에서 발급·재사용하며, 만료 전에 갱신합니다. 데이터 요청이 401이면 한 번만 재발급 후 재시도합니다. 403(허용 IP·권한), 429(요청 한도) 등은 키를 노출하지 않는 오류 메시지로 안내합니다. 토스는 client당 유효 토큰이 1개이므로 같은 키를 여러 서버 프로세스에서 공유하지 말고 기본 단일 worker로 실행하세요. 증권 계좌번호나 계좌 식별 헤더는 사용하지 않으며 실제 주문 API를 호출하지 않습니다.
 
 ### 3. OpenDART 재무제표
 
 `OPENDART_API_KEY`를 입력하고 재시작합니다. 기본적으로 전년도 사업보고서의 연결 재무제표를 조회합니다. 해당 연도 공시가 아직 없다면 `DART_BUSINESS_YEAR`에 공시된 연도를 입력하세요. 회사 고유번호는 `backend/app/services/catalog.py`에 종목코드와 매핑해 두었습니다.
 
-매출·순이익·자기자본·부채비율과 전체 공시 항목을 제공합니다. 누락 계정은 ‘미제공’으로 표시합니다. 평균 자기자본이 필요한 ROE는 기말 자본만으로 추정하지 않습니다. 실제 PER/PBR은 한국투자증권 조회값입니다. 키가 없을 때 재무정보는 학습용 예시임을 별도로 표시합니다.
+매출·순이익·자기자본·부채비율과 전체 공시 항목을 제공합니다. 누락 계정은 ‘미제공’으로 표시합니다. 평균 자기자본이 필요한 ROE는 기말 자본만으로 추정하지 않습니다. 토스의 현재가·종목 API에는 PER/PBR이 포함되지 않아 실제 시세 모드의 해당 지표는 ‘—’로 표시합니다. 샘플 PER/PBR을 실제 수치처럼 사용하지 않습니다. 키가 없을 때 재무정보는 학습용 예시임을 별도로 표시합니다.
 
-공식 연동 참고: [한국투자증권 현재가 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_price/inquire_price.py), [OpenDART 단일회사 전체 재무제표](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS003&apiId=2019020), [Supabase 이메일 인증](https://supabase.com/docs/guides/auth/passwords).
+공식 연동 참고: [토스증권 Open API 가이드](https://developers.tossinvest.com/docs), [서버 제공 OpenAPI JSON 명세](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json), [OpenDART 단일회사 전체 재무제표](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS003&apiId=2019020), [Supabase 이메일 인증](https://supabase.com/docs/guides/auth/passwords).
 
 ## 게임 규칙
 
@@ -86,7 +90,7 @@ pnpm run build
 
 ## 기업 군집화
 
-PER, PBR, 부채비율을 로그 변환·표준화한 후 결정적인 초기값으로 K-means 3개 군집을 계산합니다. 같은 군집과 지표 거리 순으로 비교 기업을 제공합니다. 8개 선정 기업 내 소규모 학습 모델이며 매수 권유나 수익 예측 모델은 아닙니다. 지표가 없거나 비교 가능한 기업이 부족하면 결과를 비웁니다. 일부 지표라도 샘플이면 결과에 샘플 표시를 합니다.
+순이익률(순이익/매출), 기말자본 대비 이익률(순이익/기말 자기자본), 부채비율을 부호를 보존하는 로그 변환·표준화한 후 결정적인 초기값으로 K-means 3개 군집을 계산합니다. 기말자본 대비 이익률은 평균 자기자본을 사용하는 ROE와 다릅니다. 토스 시세에 PER/PBR이 없으므로 시세 API 대신 재무데이터만으로 비교 기능을 유지합니다. 같은 군집과 지표 거리 순으로 비교 기업을 제공합니다. 8개 선정 기업 내 소규모 학습 모델이며 매수 권유나 수익 예측 모델은 아닙니다. 지표가 없거나 비교 가능한 기업이 부족하면 결과를 비웁니다. OpenDART 키가 없으면 샘플 재무데이터 기반임을 표시합니다.
 
 ## 구조
 
@@ -95,7 +99,7 @@ backend/app/
   api/routes/platform.py  # 인증, 시세, 주문, 대출, 학습, 랭킹 API
   core/config.py          # 루트 .env 설정
   services/catalog.py     # 선정 종목, 난이도, 학습 콘텐츠
-  services/market.py      # KIS 토큰·시세·차트, OpenDART
+  services/market.py      # 토스 토큰·일괄 시세·차트·장 운영, OpenDART
   services/store.py       # Supabase / 로컬 SQLite, 인증·동시성
   services/game.py        # 이자, 순자산, 매매·상환 계산
   main.py                 # FastAPI / 정적 빌드 제공

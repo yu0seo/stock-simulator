@@ -115,8 +115,8 @@ def test_real_elapsed_interest():
 def test_market_mode_change_protected(client,monkeypatch):
     start(client)
     monkeypatch.setattr(settings,'data_mode','auto')
-    monkeypatch.setattr(settings,'kis_app_key','test')
-    monkeypatch.setattr(settings,'kis_app_secret','test')
+    monkeypatch.setattr(settings,'toss_client_id','test')
+    monkeypatch.setattr(settings,'toss_client_secret','test')
     assert client.post('/api/trades',json={'symbol':'005930','side':'buy','quantity':1}).status_code==409
 
 def test_data_and_cluster_contracts(client):
@@ -134,10 +134,10 @@ def test_csrf_origin(client):
 
 def test_live_provider_failure_never_uses_sample(client,monkeypatch):
     monkeypatch.setattr(settings,'data_mode','auto')
-    monkeypatch.setattr(settings,'kis_app_key','fake')
-    monkeypatch.setattr(settings,'kis_app_secret','fake')
+    monkeypatch.setattr(settings,'toss_client_id','fake')
+    monkeypatch.setattr(settings,'toss_client_secret','fake')
     async def fail(*args,**kwargs): raise HTTPException(502,'provider failure')
-    monkeypatch.setattr(market,'kis',fail)
+    monkeypatch.setattr(market,'toss',fail)
     assert client.get('/api/market').status_code==502
 
 def test_expired_game_rejects_trade_and_rewards(client):
