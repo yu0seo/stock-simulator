@@ -6,6 +6,7 @@ import httpx
 from fastapi import HTTPException
 from app.core.config import settings
 from app.services.catalog import STOCKS, BY_SYMBOL
+from app.services.valuation import make_basis, basic_eps, ratios, report_date
 
 KST = timezone(timedelta(hours=9))
 
@@ -16,6 +17,7 @@ class Market:
         self.cache = {}
         self.lock = asyncio.Lock()
         self.request_lock = asyncio.Lock()
+        self.valuation_lock = asyncio.Lock()
 
     async def toss(self, path, params):
         """Server-side read-only Toss adapter. Never calls account or order APIs."""
@@ -139,32 +141,101 @@ class Market:
         points[-1]['value'] = price
         return {'source':'sample','points':points}
 
+    async def dart(self,endpoint,symbol,year,fs_div=None):
+        params={'crtfc_key':settings.opendart_api_key,'corp_code':BY_SYMBOL[symbol]['corp'],'bsns_year':str(year),'reprt_code':'11011'}
+        if fs_div: params['fs_div']=fs_div
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response=await client.get('https://opendart.fss.or.kr/api/'+endpoint+'.json',params=params)
+                response.raise_for_status()
+                data=response.json()
+            if data.get('status')=='013': return None
+            if data.get('status')!='000' or not isinstance(data.get('list'),list):
+                raise ValueError('DART response unavailable')
+            return data['list'] or None
+        except (httpx.HTTPError,ValueError,TypeError,AttributeError):
+            raise HTTPException(502,'OpenDART 공시 연결을 확인할 수 없어요. 키·허용 IP·요청 한도를 확인해주세요.') from None
+
+    async def annual_report(self,symbol):
+        key='annual:'+symbol+':'+settings.dart_business_year
+        if self.cache.get(key+':until',0)>time.time(): return self.cache[key]
+        years=[int(settings.dart_business_year)] if settings.dart_business_year else range(datetime.now(KST).year-1,datetime.now(KST).year-4,-1)
+        for year in years:
+            for division in ('CFS','OFS'):
+                rows=await self.dart('fnlttSinglAcntAll',symbol,year,division)
+                if rows:
+                    result={'year':str(year),'fs_div':division,'rows':rows}
+                    self.cache[key]=result
+                    self.cache[key+':until']=time.time()+21600
+                    return result
+        raise HTTPException(502,'조회 가능한 최근 연간 공시가 없어요. 공시 연도를 확인해주세요.')
+
+    async def valuation_basis(self,symbol):
+        key='basis:'+symbol+':'+settings.dart_business_year
+        if self.cache.get(key+':until',0)>time.time(): return self.cache[key]
+        try:
+            report=await self.annual_report(symbol)
+            shares=await self.dart('stockTotqySttus',symbol,report['year']) or []
+            dividends=[]
+            if basic_eps(report['rows']) is None:
+                dividends=await self.dart('alotMatter',symbol,report['year']) or []
+            basis=make_basis(report['rows'],shares,report['year'],report['fs_div'],dividends)
+            ttl=21600
+        except HTTPException as error:
+            basis={'source':'unavailable','year':None,'as_of':None,'statement':None,'eps':None,'bps':None,'issued':None,'eps_source':None,'filing_url':None,'per_reason':error.detail,'pbr_reason':error.detail}
+            ttl=300
+        self.cache[key]=basis
+        self.cache[key+':until']=time.time()+ttl
+        return basis
+
+    async def valuations(self):
+        # Separate from quotes/trades: slow financial disclosures must not block order prices.
+        quotes=await self.quotes()
+        if not settings.live_market:
+            return [{'symbol':q['symbol'],'price':q['price'],'per':q['per'],'pbr':q['pbr'],'source':'sample','year':None,'as_of':None,'statement':None,'eps':None,'bps':None,'per_reason':None,'pbr_reason':None,'filing_url':None} for q in quotes]
+        if not settings.opendart_api_key:
+            return [{'symbol':q['symbol'],'price':q['price'],'per':None,'pbr':None,'source':'unavailable','year':None,'as_of':None,'statement':None,'eps':None,'bps':None,'per_reason':'OpenDART API 키를 설정해주세요.','pbr_reason':'OpenDART API 키를 설정해주세요.','filing_url':None} for q in quotes]
+        async with self.valuation_lock:
+            # Shares are current, while accounting denominators are annual and explicitly dated.
+            key='valuation-stock-info'
+            if self.cache.get(key+':until',0)<=time.time():
+                try:
+                    infos=await self.toss('/api/v1/stocks',{'symbols':','.join(BY_SYMBOL)})
+                    self.cache[key]={s['symbol']:s for s in infos}
+                except (HTTPException,TypeError,KeyError):
+                    self.cache[key]={}
+                self.cache[key+':until']=time.time()+300
+            gate=asyncio.Semaphore(3)
+            async def one(q):
+                async with gate:
+                    basis=await self.valuation_basis(q['symbol'])
+                    info=self.cache[key].get(q['symbol'],{})
+                    return {'symbol':q['symbol'],**ratios(q['price'],basis,info.get('sharesOutstanding'))}
+            return await asyncio.gather(*(one(q) for q in quotes))
+
     async def financials(self, symbol):
         stock = BY_SYMBOL[symbol]
         if not settings.opendart_api_key:
             return {k:stock[k] for k in ['revenue','profit','equity','debt','roe']} | {'source':'sample','year':'학습용 예시','rows':[]}
-        key = 'financial:'+symbol
-        if key in self.cache: return self.cache[key]
-        year = settings.dart_business_year or str(datetime.now(KST).year-1)
+        key = 'financial:'+symbol+':'+settings.dart_business_year
+        if self.cache.get(key+':until',0)>time.time(): return self.cache[key]
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.get('https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json', params={'crtfc_key':settings.opendart_api_key,'corp_code':stock['corp'],'bsns_year':year,'reprt_code':'11011','fs_div':'CFS'})
-                r.raise_for_status()
-                d = r.json()
-            if d.get('status') != '000': raise HTTPException(502, f'{year}년 연결 재무제표를 조회할 수 없습니다. 공시 여부와 OpenDART 키를 확인해주세요.')
-            rows = d['list']
+            report=await self.annual_report(symbol)
+            year=report['year']
+            rows=report['rows']
             def amount(ids):
                 for item in rows:
                     if item.get('account_id') in ids:
-                        return self.number(item.get('thstrm_amount','').replace(',',''))
+                        return self.number(str(item.get('thstrm_amount','')).replace(',',''))
                 return None
             revenue=amount(['ifrs-full_Revenue','ifrs-full_RevenueFromContractsWithCustomers'])
             profit=amount(['ifrs-full_ProfitLoss'])
             equity=amount(['ifrs-full_Equity'])
             liabilities=amount(['ifrs-full_Liabilities'])
-            result={'source':'opendart','year':year,'revenue':revenue/1e12 if revenue is not None else None,'profit':profit/1e12 if profit is not None else None,'equity':equity/1e12 if equity is not None else None,'debt':liabilities/equity*100 if liabilities is not None and equity and equity>0 else None,'roe':None,'rows':[{'name':x['account_nm'],'amount':x.get('thstrm_amount',''),'statement':x.get('sj_nm','')} for x in rows]}
+            result={'source':'opendart','year':year,'statement':'연결' if report['fs_div']=='CFS' else '별도','as_of':report_date(rows),'revenue':revenue/1e12 if revenue is not None else None,'profit':profit/1e12 if profit is not None else None,'equity':equity/1e12 if equity is not None else None,'debt':liabilities/equity*100 if liabilities is not None and equity and equity>0 else None,'roe':None,'rows':[{'name':x['account_nm'],'amount':x.get('thstrm_amount',''),'statement':x.get('sj_nm','')} for x in rows]}
             # No ROE estimate from closing equity: average equity / attributable income are needed.
             self.cache[key]=result
+            self.cache[key+':until']=time.time()+21600
             return result
         except (httpx.HTTPError, KeyError, ValueError):
             raise HTTPException(502, 'OpenDART 재무제표 연결에 실패했습니다.')

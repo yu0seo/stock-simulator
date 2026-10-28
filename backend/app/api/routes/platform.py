@@ -74,6 +74,9 @@ async def logout(request:Request,response:Response):
 @router.get('/market')
 async def quotes(): return {'stocks':await market.quotes(),'source':source(),'market_open':await market.trading_open()}
 
+@router.get('/market/valuations')
+async def valuations(): return {'items':await market.valuations()}
+
 def check_symbol(symbol):
     if symbol not in BY_SYMBOL: raise HTTPException(404,'지원하지 않는 종목이에요.')
 

@@ -132,6 +132,11 @@ def test_data_and_cluster_contracts(client):
 def test_csrf_origin(client):
     assert client.post('/api/auth/logout',json={},headers={'origin':'https://unknown.example'}).status_code==403
 
+def test_valuation_endpoint_labels_samples(client):
+    data=client.get('/api/market/valuations').json()['items']
+    assert len(data)==8 and all(x['source']=='sample' and x['year'] is None for x in data)
+    assert data[0]['per']==13.2 and data[0]['pbr']==1.15
+
 def test_live_provider_failure_never_uses_sample(client,monkeypatch):
     monkeypatch.setattr(settings,'data_mode','auto')
     monkeypatch.setattr(settings,'toss_client_id','fake')

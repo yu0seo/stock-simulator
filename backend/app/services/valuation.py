@@ -43,7 +43,7 @@ def dividend_eps(rows,fs_div,as_of):
     candidates=[]
     for r in rows:
         label=r.get('se','').replace(' ','')
-        if '주당순이익' not in label or '(원)' not in label: continue
+        if '기본주당순이익' not in label or '(원)' not in label: continue
         if fs_div=='CFS' and '연결' not in label: continue
         if fs_div=='OFS' and '연결' in label: continue
         if r.get('stock_knd','').strip() not in ('보통주','보통주식','-',''): continue
@@ -55,7 +55,7 @@ def dividend_eps(rows,fs_div,as_of):
 def share_basis(rows,as_of):
     """Require explicit common, treasury and total counts from the same balance date."""
     result={'issued':None,'outstanding':None,'common_only':False}
-    dated=[r for r in rows if r.get('stlm_dt','').replace('.','-')==as_of]
+    dated=[r for r in rows if r.get('stlm_dt','').replace('.','-')==as_of and r.get('se','').strip()!='비고']
     common=[r for r in dated if r.get('se','').strip() in ('보통주','보통주식')]
     if len(common)!=1: return result
     r=common[0]

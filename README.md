@@ -66,9 +66,18 @@ pnpm run build
 
 ### 3. OpenDART 재무제표
 
-`OPENDART_API_KEY`를 입력하고 재시작합니다. 기본적으로 전년도 사업보고서의 연결 재무제표를 조회합니다. 해당 연도 공시가 아직 없다면 `DART_BUSINESS_YEAR`에 공시된 연도를 입력하세요. 회사 고유번호는 `backend/app/services/catalog.py`에 종목코드와 매핑해 두었습니다.
+`OPENDART_API_KEY`를 입력하고 재시작합니다. 기본적으로 전년도부터 최근 3개 사업연도 안에서 가장 최근 공개된 연간 재무제표를 조회합니다. 동일 연도의 연결(CFS)을 우선하고, 연결 공시가 없을 때만 별도(OFS)를 조회합니다. 자료 없음(013)만 다음 기준으로 넘어가며 인증·통신 오류로 과거 데이터를 대신 제공하지 않습니다. `DART_BUSINESS_YEAR`를 지정하면 해당 연도로 고정합니다. 회사 고유번호는 `backend/app/services/catalog.py`에 종목코드와 매핑해 두었습니다.
 
-매출·순이익·자기자본·부채비율과 전체 공시 항목을 제공합니다. 누락 계정은 ‘미제공’으로 표시합니다. 평균 자기자본이 필요한 ROE는 기말 자본만으로 추정하지 않습니다. 토스의 현재가·종목 API에는 PER/PBR이 포함되지 않아 실제 시세 모드의 해당 지표는 ‘—’로 표시합니다. 샘플 PER/PBR을 실제 수치처럼 사용하지 않습니다. 키가 없을 때 재무정보는 학습용 예시임을 별도로 표시합니다.
+매출·순이익·자기자본·부채비율과 전체 공시 항목을 제공합니다. 누락 계정은 ‘미제공’으로 표시합니다. 평균 자기자본이 필요한 ROE는 기말 자본만으로 추정하지 않습니다. 실제 PER/PBR은 토스 현재가와 OpenDART 연간 공시로 계산합니다. 샘플 PER/PBR을 실제 수치처럼 사용하지 않습니다. 키가 없을 때 재무정보는 학습용 예시임을 별도로 표시합니다.
+
+### 연간 공시 기준 PER·PBR
+
+- PER = 토스 현재가 ÷ 해당 연도 보통주 기본 EPS. 손익계산서의 표준 기본 EPS를 우선하며, 없으면 같은 결산일·접수번호·연결/별도 기준의 배당 공시 중 **기본 주당순이익임이 명시된 항목만** 확인합니다. 희석 EPS, 기본/희석 구분이 없는 EPS, 기말주식 수로 추정한 EPS는 대체 사용하지 않습니다.
+- PBR = 토스 현재가 ÷ 기말 BPS. 연결은 비지배지분을 제외한 지배기업 소유주 귀속 자본, 별도는 해당 재무제표의 자기자본을 사용합니다. 주식총수 공시의 보통주 발행주식에서 자기주식을 제외한 수량으로 나눕니다. 보고서 기준일과 공시 접수번호도 일치해야 합니다.
+- 우선주 등 다른 종류주식이 있는 기업은 보통주 귀속 자본 배분 근거가 부족하면 PBR을 **산출 불가**로 표시합니다. 이 경우에도 보통주 기본 EPS가 명확하면 PER은 계산할 수 있습니다. 보통주 주식 수·자기주식 수 누락, EPS/자본이 0 이하, 모호한 중복 공시 값 등도 이유와 함께 표시합니다.
+- 현재 토스의 종목별 발행주식 수와 공시 당시 보통주 발행주식 수를 비교합니다. 분할·증자·소각 등으로 수량이 다르면 EPS/BPS 보정 없이 임의로 계산하지 않고 재확인이 필요하다고 표시합니다.
+- 지표는 **최근 12개월(TTM)이 아닌 표시된 사업연도의 연간 실적** 기준입니다. 화면에 기준 연도·결산일·연결/별도, EPS/BPS, 공시 원문 링크와 산출 불가 사유를 제공합니다. 증권사 지표와 기준이 다를 수 있습니다.
+- `/api/market/valuations`에서 별도로 조회해 시세·주문 응답이 느린 공시 조회를 기다리지 않게 합니다. 연간 분모는 6시간 캐시하고 가격이 바뀌면 비율을 다시 계산합니다. 실패 결과와 현재 발행주식 정보는 5분 캐시 후 재확인합니다. 실제 시세와 OpenDART 키가 모두 있어야 실제 지표를 표시합니다. 새 API 키는 필요하지 않습니다.
 
 공식 연동 참고: [토스증권 Open API 가이드](https://developers.tossinvest.com/docs), [서버 제공 OpenAPI JSON 명세](https://openapi.tossinvest.com/openapi-docs/latest/openapi.json), [OpenDART 단일회사 전체 재무제표](https://opendart.fss.or.kr/guide/detail.do?apiGrpCd=DS003&apiId=2019020), [Supabase 이메일 인증](https://supabase.com/docs/guides/auth/passwords).
 
@@ -99,7 +108,8 @@ backend/app/
   api/routes/platform.py  # 인증, 시세, 주문, 대출, 학습, 랭킹 API
   core/config.py          # 루트 .env 설정
   services/catalog.py     # 선정 종목, 난이도, 학습 콘텐츠
-  services/market.py      # 토스 토큰·일괄 시세·차트·장 운영, OpenDART
+  services/market.py      # 토스 토큰·시세·장 운영, 연간 공시 조회·캐시
+  services/valuation.py   # 연간 EPS/BPS와 PER/PBR 근거 검증·계산
   services/store.py       # Supabase / 로컬 SQLite, 인증·동시성
   services/game.py        # 이자, 순자산, 매매·상환 계산
   main.py                 # FastAPI / 정적 빌드 제공
@@ -107,6 +117,7 @@ backend/tests/            # 핵심 API와 금융 로직 테스트
 frontend/src/
   main.tsx                # React 화면과 사용자 흐름
   api.ts                  # API 클라이언트 및 TypeScript 타입
+  valuation.tsx           # 지표·기준 연도·계산 근거·누락 사유 표시
   styles.css              # 반응형 디자인
 supabase/migrations/      # 테이블, RLS, 회원가입 트리거, 원자적 저장 함수
 scripts/browser-smoke.cjs # 선택적 브라우저 회귀 테스트
