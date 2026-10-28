@@ -1,4 +1,7 @@
 # Python
+node_modules/
+artifacts/
+backend/data/
 __pycache__/
 *.py[cod]
 *.pyd

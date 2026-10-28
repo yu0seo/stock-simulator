@@ -1,31 +1,38 @@
+from pathlib import Path
 from functools import lru_cache
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+ROOT = Path(__file__).resolve().parents[3]
 
 class Settings(BaseSettings):
-    app_name: str = "Stock Simulator API"
-    app_env: str = "development"
-    frontend_url: str = "http://localhost:5500"
+    app_name: str = '대가 API'
+    frontend_url: str = 'http://localhost:5173'
+    data_mode: str = 'auto'
+    auth_mode: str = 'auto'
+    supabase_url: str = ''
+    supabase_anon_key: str = ''
+    supabase_service_role_key: str = ''
+    kis_app_key: str = ''
+    kis_app_secret: str = ''
+    kis_base_url: str = 'https://openapi.koreainvestment.com:9443'
+    opendart_api_key: str = ''
+    dart_business_year: str = ''
+    initial_capital: int = 10_000_000
+    game_days: int = 90
+    database_path: str = str(ROOT / 'backend/data/daega.sqlite3')
+    model_config = SettingsConfigDict(env_file=ROOT / '.env', env_file_encoding='utf-8', extra='ignore')
 
-    supabase_url: str = ""
-    supabase_anon_key: str = ""
-    supabase_service_role_key: str = ""
+    @property
+    def live_market(self):
+        return self.data_mode != 'demo' and bool(self.kis_app_key and self.kis_app_secret)
 
-    stock_api_base_url: str = ""
-    stock_api_key: str = ""
-
-    model_config = SettingsConfigDict(
-        env_file=(".env", "../.env"),
-        env_file_encoding="utf-8",
-        extra="ignore",
-    )
-
+    @property
+    def cloud_auth(self):
+        return self.auth_mode != 'local' and bool(self.supabase_url and self.supabase_anon_key and self.supabase_service_role_key)
 
 @lru_cache
-def get_settings() -> Settings:
+def get_settings():
     return Settings()
-
 
 settings = get_settings()
 

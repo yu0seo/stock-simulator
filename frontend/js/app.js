@@ -1,2 +1,0 @@
-// Frontend application entry point.
-
