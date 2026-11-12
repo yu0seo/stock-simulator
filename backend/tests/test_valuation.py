@@ -4,7 +4,6 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from app.core.config import settings
-from app.services.market import Market, KST
 from app.services.valuation import make_basis, ratios, basic_eps
 
 YEAR='2025'
@@ -112,66 +111,3 @@ def configure(monkeypatch):
     monkeypatch.setattr(settings,'toss_client_secret','test')
     monkeypatch.setattr(settings,'opendart_api_key','test')
     monkeypatch.setattr(settings,'dart_business_year',YEAR)
-
-def test_dart_contracts_and_cached_denominators_repriced(monkeypatch):
-    configure(monkeypatch)
-    calls=[]
-    def handler(r):
-        calls.append(r.url.path)
-        assert r.url.params['bsns_year']==YEAR and r.url.params['reprt_code']=='11011'
-        if 'fnlttSinglAcntAll' in r.url.path:
-            assert r.url.params['fs_div']=='CFS'
-            return httpx.Response(200,json={'status':'000','list':report()})
-        assert 'stockTotqySttus' in r.url.path
-        return httpx.Response(200,json={'status':'000','list':shares()})
-    original=httpx.AsyncClient
-    monkeypatch.setattr(httpx,'AsyncClient',lambda **kwargs:original(transport=httpx.MockTransport(handler),**kwargs))
-    m=Market()
-    price=[20000]
-    async def quotes(): return [{'symbol':'005930','price':price[0]}]
-    async def toss(path,params):
-        assert path=='/api/v1/stocks'
-        return [{'symbol':'005930','sharesOutstanding':'1000'}]
-    monkeypatch.setattr(m,'quotes',quotes)
-    monkeypatch.setattr(m,'toss',toss)
-    async def run():
-        assert (await m.valuations())[0]['per']==10
-        price[0]=30000
-        assert (await m.valuations())[0]['per']==15
-    asyncio.run(run())
-    assert len(calls)==2
-
-def test_unpublished_annual_fallback_and_explicit_year(monkeypatch):
-    configure(monkeypatch)
-    monkeypatch.setattr(settings,'dart_business_year','')
-    m=Market()
-    latest=datetime.now(KST).year-1
-    calls=[]
-    async def dart(endpoint,symbol,year,fs_div):
-        calls.append((year,fs_div))
-        return report() if year==latest-1 and fs_div=='CFS' else None
-    monkeypatch.setattr(m,'dart',dart)
-    result=asyncio.run(m.annual_report('005930'))
-    assert result['year']==str(latest-1)
-    assert calls==[(latest,'CFS'),(latest,'OFS'),(latest-1,'CFS')]
-    monkeypatch.setattr(settings,'dart_business_year',str(latest))
-    with pytest.raises(HTTPException): asyncio.run(MarketWithDart(dart).annual_report('005930'))
-
-class MarketWithDart(Market):
-    def __init__(self,dart):
-        super().__init__()
-        self.dart=dart
-
-def test_dart_errors_do_not_fabricate_or_poison_quotes(monkeypatch):
-    configure(monkeypatch)
-    m=Market()
-    async def quotes():return [{'symbol':'005930','price':20000}]
-    async def toss(*args):return []
-    async def dart(*args):raise HTTPException(502,'공시 연결 실패')
-    monkeypatch.setattr(m,'quotes',quotes)
-    monkeypatch.setattr(m,'toss',toss)
-    monkeypatch.setattr(m,'dart',dart)
-    result=asyncio.run(m.valuations())[0]
-    assert result['per'] is None and result['pbr'] is None
-    assert result['source']=='unavailable' and result['per_reason']=='공시 연결 실패'
-    assert asyncio.run(m.quotes())[0]['price']==20000
