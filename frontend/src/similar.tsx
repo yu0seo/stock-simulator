@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react';
 import {ArrowRight,ChartNoAxesCombined,Target} from 'lucide-react';
 import {api,ClusterResult,Stock} from './api';
 
-const colors=['#557edf','#64a68e','#b08ad1','#d49c66','#d37c91'];
+const colors=['#4b65b9','#518f73','#a177a5','#ca943a','#d27851'];
 const groups=(i:number)=>'군집 '+String(i+1);
 
 export function SimilarCompanies({stocks,date,onStock}:{stocks:Stock[];date:string;onStock:(s:string)=>void}){
@@ -24,12 +24,12 @@ export function SimilarCompanies({stocks,date,onStock}:{stocks:Stock[];date:stri
       {error?<p className="form-error" role="alert">{error}</p>:!data?<p className="quiet-empty">기업의 재무 특성을 비교하고 있어요.</p>:<>
         <div className={'cluster-map '+(loading?'is-loading':'')} aria-busy={loading}>
           <svg viewBox={`0 0 ${W} ${H}`} role="group" aria-label="유사 기업 군집 지도">
-            <rect x={L} y={T} width={W-L-R} height={H-T-B} rx="12" fill="#fafcff"/>
-            {[0,.25,.5,.75,1].map(v=><g key={v}><line x1={L+(W-L-R)*v} x2={L+(W-L-R)*v} y1={T} y2={H-B} stroke="#e7edf8" strokeDasharray="3 5"/><line x1={L} x2={W-R} y1={T+(H-T-B)*v} y2={T+(H-T-B)*v} stroke="#e7edf8" strokeDasharray="3 5"/></g>)}
+            <rect x={L} y={T} width={W-L-R} height={H-T-B} rx="12" fill="#f6f8ee"/>
+            {[0,.25,.5,.75,1].map(v=><g key={v}><line x1={L+(W-L-R)*v} x2={L+(W-L-R)*v} y1={T} y2={H-B} stroke="#dfe6d4" strokeDasharray="3 5"/><line x1={L} x2={W-R} y1={T+(H-T-B)*v} y2={T+(H-T-B)*v} stroke="#dfe6d4" strokeDasharray="3 5"/></g>)}
             {data.clusters.filter(c=>filter===null||filter===c.id).map(c=>{const members=data.nodes.filter(n=>n.cluster===c.id);const cx=members.reduce((a,n)=>a+x(n.x),0)/members.length,cy=members.reduce((a,n)=>a+y(n.y),0)/members.length;const rx=Math.max(33,Math.sqrt(members.reduce((a,n)=>a+(x(n.x)-cx)**2,0)/members.length)*1.6),ry=Math.max(28,Math.sqrt(members.reduce((a,n)=>a+(y(n.y)-cy)**2,0)/members.length)*1.6);return <ellipse key={c.id} cx={cx} cy={cy} rx={Math.min(rx,180)} ry={Math.min(ry,140)} fill={colors[c.id]+'0b'} stroke={colors[c.id]+'25'} strokeDasharray="5 5"/>;})}
             {data.nodes.map(n=><g key={n.symbol} role="button" tabIndex={0} aria-label={`${n.name}, ${groups(n.cluster)}, 비교 기준으로 선택`} className="cluster-node" opacity={filter===null||filter===n.cluster?1:.12} onMouseEnter={()=>setHover(n.symbol)} onMouseLeave={()=>setHover(null)} onFocus={()=>setHover(n.symbol)} onBlur={()=>setHover(null)} onClick={()=>setSelected(n.symbol)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelected(n.symbol);}}}><title>{n.name} · {groups(n.cluster)} · 공시 {n.published_at}</title>{n.symbol===selected&&<circle cx={x(n.x)} cy={y(n.y)} r="17" fill={colors[n.cluster]+'16'} stroke={colors[n.cluster]} strokeWidth="1.3"/>}<circle cx={x(n.x)} cy={y(n.y)} r={n.symbol===selected?8:6} fill={colors[n.cluster]} stroke="white" strokeWidth="2"/></g>)}
-            {active&&<g pointerEvents="none"><rect x={Math.min(W-177,Math.max(10,x(active.x)-78))} y={Math.max(5,y(active.y)-44)} width="156" height="29" rx="6" fill="white" stroke={colors[active.cluster]+'66'}/><text x={Math.min(W-99,Math.max(88,x(active.x)))} y={Math.max(24,y(active.y)-25)} textAnchor="middle" fontSize="12" fontWeight="600" fill="#527095">{active.name}</text></g>}
-            <text x={W/2} y={H-10} textAnchor="middle" fontSize="11" fill="#8295b2">재무 특성 축 1 · {(data.explained[0]*100).toFixed(1)}%</text><text transform={`translate(18 ${H/2}) rotate(-90)`} textAnchor="middle" fontSize="11" fill="#8295b2">재무 특성 축 2 · {(data.explained[1]*100).toFixed(1)}%</text>
+            {active&&<g pointerEvents="none"><rect x={Math.min(W-177,Math.max(10,x(active.x)-78))} y={Math.max(5,y(active.y)-44)} width="156" height="29" rx="6" fill="white" stroke={colors[active.cluster]+'66'}/><text x={Math.min(W-99,Math.max(88,x(active.x)))} y={Math.max(24,y(active.y)-25)} textAnchor="middle" fontSize="12" fontWeight="600" fill="#526842">{active.name}</text></g>}
+            <text x={W/2} y={H-10} textAnchor="middle" fontSize="11" fill="#8c9a79">재무 특성 축 1 · {(data.explained[0]*100).toFixed(1)}%</text><text transform={`translate(18 ${H/2}) rotate(-90)`} textAnchor="middle" fontSize="11" fill="#8c9a79">재무 특성 축 2 · {(data.explained[1]*100).toFixed(1)}%</text>
           </svg>
         </div>
         <p className="map-hint">점을 선택하면 기준 기업이 바뀌어요. 같은 색은 같은 군집이에요. 지도는 3개 재무 특성을 2개 축으로 요약한 모습이에요.</p>
