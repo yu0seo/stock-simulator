@@ -18,8 +18,8 @@ def report(eps='2,000',owners='950,000',total='1,500,000'):
 
 def shares(preferred=0,date=DATE):
     common=dict(se='보통주',istc_totqy='1,000',tesstk_co='50',distb_stock_co='950',stlm_dt=date,rcept_no=RECEIPT)
-    rows=[common,dict(se='합계',istc_totqy=str(1000+preferred),stlm_dt=date,rcept_no=RECEIPT)]
-    if preferred: rows.append(dict(se='우선주',istc_totqy=str(preferred),stlm_dt=date,rcept_no=RECEIPT))
+    rows=[common,dict(se='합계',istc_totqy=str(1000+preferred),tesstk_co='50',distb_stock_co=str(950+preferred),stlm_dt=date,rcept_no=RECEIPT)]
+    if preferred: rows.append(dict(se='우선주',istc_totqy=str(preferred),tesstk_co='0',distb_stock_co=str(preferred),stlm_dt=date,rcept_no=RECEIPT))
     return rows
 
 def test_annual_per_pbr_parent_equity_treasury_and_price_recalculation():
@@ -27,23 +27,24 @@ def test_annual_per_pbr_parent_equity_treasury_and_price_recalculation():
     assert basis['eps']==2000 and basis['bps']==1000
     assert basis['as_of']==DATE and basis['statement']=='연결'
     assert basis['filing_url'].endswith(RECEIPT)
-    a=ratios(20000,basis,'1000')
-    b=ratios(30000,basis,'1000')
+    a=ratios(20000,basis)
+    b=ratios(30000,basis)
     assert (a['per'],a['pbr'])==(10,20)
     assert (b['per'],b['pbr'])==(15,30)
 
-def test_ordinary_eps_survives_preferred_but_pbr_is_not_guessed():
+def test_preferred_shares_use_verified_total_outstanding_for_bps():
     rows=report()
     rows.append(dict(account_id='ifrs-full_BasicEarningsLossPerShare',sj_div='IS',account_nm='우선주기본주당이익',account_detail='우선주',thstrm_amount='9999'))
     basis=make_basis(rows,shares(preferred=100),YEAR,'CFS')
-    value=ratios(20000,basis,'1000')
-    assert value['per']==10 and value['pbr'] is None
-    assert '우선주' in value['pbr_reason']
+    value=ratios(20000,basis)
+    assert value['per']==10 and value['pbr']==pytest.approx(22.1053)
+    assert basis['bps']==pytest.approx(950000/1050)
+    assert '보통주·우선주 합산' in basis['bps_source']
 
 @pytest.mark.parametrize('eps',['0','-100','(100)','NaN','Infinity',None])
 def test_unusable_eps_never_returns_negative_or_fake_per(eps):
     basis=make_basis(report(eps=eps),shares(),YEAR,'CFS')
-    v=ratios(20000,basis,'1000')
+    v=ratios(20000,basis)
     assert v['per'] is None and v['per_reason']
     assert v['pbr']==20
 
@@ -52,6 +53,21 @@ def test_ambiguous_eps_and_diluted_eps_are_not_selected():
     rows.append(dict(account_id='ifrs-full_BasicEarningsLossPerShare',sj_div='IS',account_detail='보통주',thstrm_amount='3000'))
     assert basic_eps(rows) is None
     assert basic_eps([dict(account_id='ifrs-full_DilutedEarningsLossPerShare',sj_div='IS',thstrm_amount='100')]) is None
+
+def test_basic_eps_sums_explicit_continuing_and_discontinued_components():
+    rows=[dict(sj_div='CIS',account_id='ifrs-full_BasicEarningsLossPerShareFromContinuingOperations',thstrm_amount='1138'),dict(sj_div='CIS',account_id='ifrs-full_BasicEarningsLossPerShareFromDiscontinuedOperations',thstrm_amount='-20')]
+    assert basic_eps(rows)==1118
+    assert basic_eps(rows[:1]) is None
+    rows.append({**rows[0],'thstrm_amount':'9999'})
+    assert basic_eps(rows) is None
+
+
+def test_explicit_common_combined_basic_diluted_eps_is_accepted():
+    rows=[dict(sj_div='IS',account_id='-표준계정코드 미사용-',account_nm='보통주 기본/희석주당순이익',thstrm_amount='4780'),dict(sj_div='IS',account_nm='구형우선주 기본/희석주당순이익',thstrm_amount='4830')]
+    assert basic_eps(rows)==4780
+    assert basic_eps([dict(sj_div='IS',account_nm='주당순이익',thstrm_amount='4780')]) is None
+    assert basic_eps([dict(sj_div='IS',account_nm='보통주 희석주당순이익',thstrm_amount='4780')]) is None
+
 
 def test_dividend_eps_fallback_matches_statement_date_and_receipt():
     dividends=[dict(se='(연결)기본주당순이익(원)',stock_knd='보통주',thstrm='2,500',stlm_dt=DATE,rcept_no=RECEIPT),dict(se='(별도)기본주당순이익(원)',stock_knd='보통주',thstrm='9999',stlm_dt=DATE,rcept_no=RECEIPT)]
@@ -84,7 +100,7 @@ def test_share_date_receipt_and_treasury_mismatches_fail_closed():
         if invalid[0]['stlm_dt']==DATE:
             if invalid[0]['distb_stock_co']=='950': invalid[0]['distb_stock_co']='999'
         b=make_basis(report(),invalid,YEAR,'CFS')
-        assert b['pbr_reason'] and ratios(20000,b,'1000')['per'] is None
+        assert b['pbr_reason'] and ratios(20000,b)['per']==10
     mismatch=shares()
     mismatch[0]['rcept_no']='20260317000002'
     assert make_basis(report(),mismatch,YEAR,'CFS')['per_reason']
@@ -95,16 +111,59 @@ def test_incomplete_share_classes_and_unknown_treasury_do_not_estimate():
         b=make_basis(report(),s,YEAR,'CFS')
         assert b['bps'] is None
 
-@pytest.mark.parametrize('current',['2000',None,'NaN','0'])
-def test_post_report_capital_changes_or_missing_current_shares_prevent_ratios(current):
-    v=ratios(20000,make_basis(report(),shares(),YEAR,'CFS'),current)
-    assert v['per'] is None and v['pbr'] is None
-    assert v['per_reason'] and v['pbr_reason']
+def test_reported_basis_per_is_independent_of_current_share_count():
+    basis=make_basis(report(),shares(),YEAR,'CFS')
+    v=ratios(20000,basis)
+    assert v['per']==10 and v['pbr']==20
+    assert v['per_reason'] is None and v['pbr_reason'] is None
 
-def test_unknown_report_date_never_uses_invented_december_31():
+
+def test_reported_eps_does_not_require_treasury_share_data():
+    basis=make_basis(report(),[],YEAR,'CFS')
+    assert ratios(20000,basis)['per']==10
+    assert basis['bps'] is None and basis['pbr_reason']
+
+
+def test_aggregate_bps_accepts_voting_share_labels_and_checks_totals():
+    rows=shares()
+    rows[0]['se']='의결권 있는 주식'
+    assert make_basis(report(),rows,YEAR,'CFS')['bps']==1000
+    rows[1]['distb_stock_co']='999'
+    assert make_basis(report(),rows,YEAR,'CFS')['bps'] is None
+
+
+def test_unissued_preferred_dash_does_not_block_verified_common_only_bps():
+    rows=shares()+[dict(se='우선주',istc_totqy='-',tesstk_co='-',distb_stock_co='-',stlm_dt=DATE,rcept_no=RECEIPT)]
+    b=make_basis(report(),rows,YEAR,'CFS')
+    assert b['bps']==1000 and b['pbr_reason'] is None
+    rows[1]['istc_totqy']='1100'
+    assert make_basis(report(),rows,YEAR,'CFS')['bps'] is None
+
+
+def test_zero_treasury_dash_requires_matching_issued_and_outstanding_counts():
+    rows=shares()
+    rows[0].update(tesstk_co='-',distb_stock_co='1000')
+    rows[1].update(tesstk_co='-',distb_stock_co='1000')
+    b=make_basis(report(),rows,YEAR,'CFS')
+    assert b['bps']==950 and b['eps']==2000
+    rows[0]['distb_stock_co']='950'
+    assert make_basis(report(),rows,YEAR,'CFS')['bps'] is None
+
+
+def test_full_statement_date_comes_from_the_same_filing_share_disclosure():
     rows=report()
-    for r in rows: r.pop('thstrm_dt',None)
-    assert make_basis(rows,shares(),YEAR,'CFS')['as_of'] is None
+    for r in rows:
+        r.pop('thstrm_dt',None)
+        r['bsns_year']=YEAR
+    basis=make_basis(rows,shares(),YEAR,'CFS')
+    assert basis['as_of']==DATE and basis['eps']==2000 and basis['bps']==1000
+    wrong=shares()
+    for r in wrong: r['rcept_no']='20260317000002'
+    assert make_basis(rows,wrong,YEAR,'CFS')['as_of'] is None
+    mixed=shares()
+    mixed[1]['stlm_dt']='2025-12-30'
+    assert make_basis(rows,mixed,YEAR,'CFS')['as_of'] is None
+    assert make_basis(rows,[],YEAR,'CFS')['as_of'] is None
 
 def configure(monkeypatch):
     monkeypatch.setattr(settings,'data_mode','auto')
@@ -130,8 +189,7 @@ def test_dart_contracts_and_cached_denominators_repriced(monkeypatch):
     price=[20000]
     async def quotes(): return [{'symbol':'005930','price':price[0]}]
     async def toss(path,params):
-        assert path=='/api/v1/stocks'
-        return [{'symbol':'005930','sharesOutstanding':'1000'}]
+        raise AssertionError('Reported EPS/BPS must not depend on current share counts')
     monkeypatch.setattr(m,'quotes',quotes)
     monkeypatch.setattr(m,'toss',toss)
     async def run():

@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.services.game import create_account,accrue,summary,trade,repay
 from app.services.market import market,Market
 from app.services.store import store
+from app.services.leaderboard import leaderboard
 from app.api.routes.platform import auth_attempts
 
 @pytest.fixture
@@ -17,6 +18,12 @@ def client(tmp_path,monkeypatch):
     monkeypatch.setattr(settings,'auth_mode','local')
     monkeypatch.setattr(settings,'data_mode','demo')
     monkeypatch.setattr(settings,'opendart_api_key','')
+    monkeypatch.setattr(settings,'supabase_url','')
+    leaderboard.rows=[]
+    leaderboard.updated_at=None
+    leaderboard.until=0
+    leaderboard.excluded=0
+    leaderboard.error=False
     market.cache.clear()
     auth_attempts.clear()
     with TestClient(app) as c: yield c
@@ -74,6 +81,7 @@ def test_quiz_reward_once_and_ranking_excludes_reward(client):
     assert client.post('/api/lessons/per/answer',json={'answer':1}).json()['reward']==0
     a=client.get('/api/portfolio').json()['account']
     assert a['rewards']==50000 and a['completed']==['per']
+    leaderboard.until=0  # Expire the 10-minute snapshot after creating the test account.
     ranks=client.get('/api/ranking').json()['items']
     assert ranks[0]['nickname']=='새싹투자자'
     assert abs(ranks[0]['return_rate'])<0.001
@@ -90,6 +98,7 @@ def test_isolation_and_reset(client):
     assert client.post('/api/game/start',json={'difficulty':'easy'}).status_code==409
     assert client.post('/api/game/restart',json={'difficulty':'normal'}).status_code==200
     assert client.get('/api/portfolio').json()['account']['principal']==30000000
+    leaderboard.until=0
     assert len(client.get('/api/ranking').json()['items'])==2
 
 def test_concurrent_write_rejected(client):

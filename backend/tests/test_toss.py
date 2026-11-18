@@ -127,6 +127,29 @@ def test_pending_daily_changes_do_not_block_price_refresh(monkeypatch,live):
     asyncio.run(run())
 
 
+def test_expired_chart_cache_keeps_same_day_previous_close(monkeypatch,live):
+    stamp=datetime.now(KST)
+    day=stamp.date().isoformat()
+    yesterday=(stamp-timedelta(days=1)).date().isoformat()
+    async def fake(path,params):
+        if path=='/api/v1/prices':
+            return [{'symbol':s,'lastPrice':'80000','currency':'KRW','timestamp':stamp.isoformat()} for s in BY_SYMBOL]
+        raise HTTPException(502,'차트 요청 한도')
+    monkeypatch.setattr(live,'toss',fake)
+    for symbol in BY_SYMBOL:
+        key='candles:'+symbol
+        live.cache[key]=[{'date':yesterday,'value':64000,'volume':10}]
+        live.cache[key+':day']=day
+        live.cache[key+':until']=0
+    async def run():
+        assert all(q['change']==25 for q in await live.quotes())
+        assert all(q['change']==25 for q in await live.changes())
+        for symbol in BY_SYMBOL: live.cache['candles:'+symbol+':day']=yesterday
+        live.cache['quotes_until']=0
+        assert all(q['change'] is None for q in await live.quotes())
+    asyncio.run(run())
+
+
 def test_holiday_calendar_and_cache(monkeypatch,live):
     calls=[]
     async def fake(path,params):

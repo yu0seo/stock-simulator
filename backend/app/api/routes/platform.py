@@ -1,4 +1,3 @@
-import math
 import time
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -7,6 +6,7 @@ from app.core.config import settings
 from app.services.catalog import BY_SYMBOL, STOCKS, LESSONS, DIFFICULTIES
 from app.services.market import market
 from app.services.store import store
+from app.services.leaderboard import leaderboard
 from app.services.game import create_account, accrue, summary, trade, repay
 
 router=APIRouter()
@@ -93,34 +93,19 @@ async def financials(symbol:str):
     check_symbol(symbol)
     return await market.financials(symbol)
 
+@router.get('/market/clusters')
+async def clusters(): return await market.clusters()
+
 @router.get('/companies/{symbol}/similar')
 async def similar(symbol:str):
     check_symbol(symbol)
-    # Standardized feature vectors + deterministic K-means; demo sample is labeled.
-    features=[]
-    for stock in STOCKS:
-        f=await market.financials(stock['symbol'])
-        values=[f['revenue'],f['profit'],f['equity'],f['debt']]
-        if all(v is not None and math.isfinite(v) for v in values) and f['revenue']>0 and f['equity']>0 and f['debt']>=0:
-            vals=[f['profit']/f['revenue']*100,f['profit']/f['equity']*100,f['debt']]
-            features.append((stock['symbol'],[math.copysign(math.log1p(abs(v)),v) for v in vals]))
-    if len(features)<4 or symbol not in dict(features):
-        return {'items':[],'source':'live' if settings.opendart_api_key else 'sample','method':'비교 가능한 재무지표가 부족해요.'}
-    means=[sum(v[j] for _,v in features)/len(features) for j in range(3)]
-    scales=[(sum((v[j]-means[j])**2 for _,v in features)/len(features))**.5 or 1 for j in range(3)]
-    vectors={s:[(v[j]-means[j])/scales[j] for j in range(3)] for s,v in features}
-    centers=list(vectors.values())[::max(1,len(vectors)//3)][:3]
-    def dist(a,b): return sum((x-y)**2 for x,y in zip(a,b))
-    labels={}
-    for _ in range(20):
-        updated={s:min(range(len(centers)),key=lambda i:dist(v,centers[i])) for s,v in vectors.items()}
-        if updated==labels: break
-        labels=updated
-        for i in range(len(centers)):
-            group=[v for s,v in vectors.items() if labels[s]==i]
-            if group: centers[i]=[sum(v[j] for v in group)/len(group) for j in range(3)]
-    candidates=sorted([s for s in vectors if s!=symbol],key=lambda s:(labels[s]!=labels[symbol],dist(vectors[s],vectors[symbol])))[:3]
-    return {'items':[{'symbol':s,'name':BY_SYMBOL[s]['name'],'same_cluster':labels[s]==labels[symbol],'distance':round(dist(vectors[s],vectors[symbol])**.5,2)} for s in candidates],'source':'live' if settings.opendart_api_key else 'sample','method':f'순이익률·기말자본 대비 이익률·부채비율 표준화 / K-means 3개 군집 / {len(STOCKS)}개 기업 내 비교 (기말자본 대비 이익률은 ROE와 다름)'}
+    model=await market.clusters()
+    target=next((p for p in model['items'] if p['symbol']==symbol),None)
+    candidates=[]
+    if target:
+        def distance(point): return sum((x-y)**2 for x,y in zip(point['vector'],target['vector']))
+        candidates=sorted((p for p in model['items'] if p['symbol']!=symbol),key=lambda p:(p['cluster']!=target['cluster'],distance(p)))[:3]
+    return {'items':[{'symbol':p['symbol'],'name':p['name'],'same_cluster':p['cluster']==target['cluster'],'distance':round(distance(p)**.5,2)} for p in candidates],'source':'live' if model['source']=='opendart' else 'sample','method':model['method']}
 
 @router.get('/portfolio')
 async def portfolio(user=Depends(current_user)):
@@ -193,14 +178,4 @@ async def answer(lesson_id:str,body:Answer,user=Depends(current_user)):
 
 @router.get('/ranking')
 async def ranking(difficulty:Literal['all','easy','normal','hard']='all'):
-    quotes=await market.quotes()
-    rows=[]
-    for row in await store.accounts():
-        a=row['data']
-        if a['source']!=source() or (difficulty!='all' and a['difficulty']!=difficulty): continue
-        accrue(a)
-        s=summary(a,quotes)
-        rows.append({'id':row['id'],'nickname':row['nickname'],'difficulty':a['difficulty'],'return_rate':s['return_rate'],'net_assets':s['net_assets'],'completed':len(a['completed'])})
-    rows.sort(key=lambda x:(-x['return_rate'],x['nickname']))
-    for i,row in enumerate(rows): row['rank']=i+1
-    return {'items':rows[:100],'source':source(),'formula':'(순자산 − 초기 자기자본 − 학습 보상) ÷ (초기 자기자본 + 학습 보상) × 100','count':len(rows)}
+    return await leaderboard.get(difficulty)

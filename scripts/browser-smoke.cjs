@@ -25,7 +25,8 @@ async function main(){
     await page.getByRole('button',{name:'비슷한 기업',exact:true}).click();
     await page.getByText(/K-means 3개 군집/).waitFor();
     await page.getByRole('button',{name:'닫기',exact:true}).click();
-    await page.getByRole('button',{name:'종목 탐색',exact:true}).click();
+    if(await page.getByRole('button',{name:'종목 탐색',exact:true}).getAttribute('aria-expanded')!=='true')await page.getByRole('button',{name:'종목 탐색',exact:true}).click();
+    await page.getByRole('button',{name:'종목 목록',exact:true}).click();
     await page.getByText('학습용 선정 종목 50개',{exact:true}).waitFor();
     if(await page.locator('.stock-table tbody tr').count()!==50)throw new Error('Expected 50 stocks');
     await page.screenshot({path:path.join(output,'market-50-desktop.png')});
@@ -69,7 +70,8 @@ async function main(){
     await page.waitForFunction(()=>document.querySelector('.sidebar').getBoundingClientRect().right<=0);
     await page.screenshot({path:path.join(output,'dashboard-mobile.png'),fullPage:true});
     await page.getByRole('button',{name:'메뉴 열기'}).click();
-    await page.getByRole('button',{name:'종목 탐색',exact:true}).click();
+    if(await page.getByRole('button',{name:'종목 탐색',exact:true}).getAttribute('aria-expanded')!=='true')await page.getByRole('button',{name:'종목 탐색',exact:true}).click();
+    await page.getByRole('button',{name:'종목 목록',exact:true}).click();
     if(await page.locator('.stock-table tbody tr').count()!==50)throw new Error('Expected 50 stocks on mobile');
     await page.waitForFunction(()=>document.querySelector('.sidebar').getBoundingClientRect().right<=0);
     await page.screenshot({path:path.join(output,'market-50-mobile.png')});

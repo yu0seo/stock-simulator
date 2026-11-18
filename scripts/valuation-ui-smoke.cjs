@@ -23,9 +23,10 @@ async function main(){
   });
   try{
     await page.goto('http://127.0.0.1:5173',{waitUntil:'domcontentloaded'});
-    await page.getByRole('button',{name:'종목 탐색',exact:true}).click();
-    await page.getByRole('cell',{name:'10.00배 2025 연간',exact:true}).waitFor();
-    await page.getByRole('cell',{name:'20.00배 2025 연간',exact:true}).waitFor();
+    if(await page.getByRole('button',{name:'종목 탐색',exact:true}).getAttribute('aria-expanded')!=='true')await page.getByRole('button',{name:'종목 탐색',exact:true}).click();
+    await page.getByRole('button',{name:'종목 목록',exact:true}).click();
+    await page.getByRole('cell',{name:'10.00배 2025 공시 기준',exact:true}).waitFor();
+    await page.getByRole('cell',{name:'20.00배 2025 공시 기준',exact:true}).waitFor();
     await page.getByRole('button',{name:'삼성전자 상세 보기'}).click();
     const dialog=page.getByRole('dialog');
     await dialog.getByText('2025년 연간 공시 기준',{exact:true}).waitFor();

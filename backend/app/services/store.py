@@ -137,4 +137,12 @@ class Store:
         with self.connect() as db:
             return [{'id':r['user_id'],'nickname':r['nickname'],'data':json.loads(r['data'])} for r in db.execute('SELECT a.*,u.nickname FROM accounts a JOIN users u ON u.id=a.user_id')]
 
+    async def ranking_accounts(self):
+        rows=await self.accounts()
+        if settings.shared_rankings and not settings.cloud_auth:
+            remote=await self.cloud('/rest/v1/accounts?select=user_id,data,profiles(nickname)&limit=1000',admin=True)
+            known={row['id'] for row in rows}
+            rows.extend({'id':r['user_id'],'nickname':r['profiles']['nickname'],'data':r['data']} for r in remote if r['user_id'] not in known)
+        return rows
+
 store=Store()

@@ -27,6 +27,10 @@ class Settings(BaseSettings):
         return self.data_mode != 'demo' and bool(self.toss_client_id and self.toss_client_secret)
 
     @property
+    def shared_rankings(self):
+        return bool(self.supabase_url and self.supabase_service_role_key)
+
+    @property
     def cloud_auth(self):
         return self.auth_mode != 'local' and bool(self.supabase_url and self.supabase_anon_key and self.supabase_service_role_key)
 

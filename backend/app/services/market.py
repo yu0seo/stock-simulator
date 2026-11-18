@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.services.catalog import STOCKS, BY_SYMBOL
 from app.services.valuation import make_basis, basic_eps, ratios, report_date
+from app.services.clustering import cluster_companies
 
 KST = timezone(timedelta(hours=9))
 
@@ -19,6 +20,7 @@ class Market:
         self.request_lock = asyncio.Lock()
         self.valuation_lock = asyncio.Lock()
         self.change_lock = asyncio.Lock()
+        self.cluster_lock = asyncio.Lock()
 
     async def toss(self, path, params):
         """Server-side read-only Toss adapter. Never calls account or order APIs."""
@@ -87,6 +89,7 @@ class Market:
             raise HTTPException(502,'토스증권 차트 응답을 확인할 수 없어요.') from None
         self.cache[key]=normalized
         self.cache[key+':until']=time.time()+60
+        self.cache[key+':day']=datetime.now(KST).date().isoformat()
         return normalized
 
     async def quotes(self):
@@ -111,8 +114,7 @@ class Market:
                         if q['currency']!='KRW': raise ValueError('Unsupported currency')
                         price=self.price(q['lastPrice'])
                         quote_time=q.get('timestamp')
-                        key='candles:'+stock['symbol']
-                        candles=self.cache.get(key,[]) if self.cache.get(key+':until',0)>time.time() else []
+                        candles=self.cached_candles(stock['symbol'])
                         row.update(price=price,change=self.price_change(price,quote_time,candles),per=None,pbr=None,quote_at=quote_time)
                     except HTTPException:
                         raise
@@ -124,6 +126,10 @@ class Market:
                 rows.append(row)
             self.cache.update(quotes=rows, quotes_until=time.time()+10)
             return rows
+
+    def cached_candles(self,symbol):
+        key='candles:'+symbol
+        return self.cache.get(key,[]) if self.cache.get(key+':day')==datetime.now(KST).date().isoformat() else []
 
     @classmethod
     def price_change(cls,price,quote_time,candles):
@@ -141,7 +147,7 @@ class Market:
                 try:
                     candles=await self.candles(quote['symbol'])
                 except HTTPException:
-                    candles=[]
+                    candles=self.cached_candles(quote['symbol'])
                 items.append({'symbol':quote['symbol'],'price':quote['price'],'change':self.price_change(quote['price'],quote['quote_at'],candles)})
             return items
 
@@ -215,21 +221,11 @@ class Market:
         if not settings.opendart_api_key:
             return [{'symbol':q['symbol'],'price':q['price'],'per':None,'pbr':None,'source':'unavailable','year':None,'as_of':None,'statement':None,'eps':None,'bps':None,'per_reason':'OpenDART API 키를 설정해주세요.','pbr_reason':'OpenDART API 키를 설정해주세요.','filing_url':None} for q in quotes]
         async with self.valuation_lock:
-            # Shares are current, while accounting denominators are annual and explicitly dated.
-            key='valuation-stock-info'
-            if self.cache.get(key+':until',0)<=time.time():
-                try:
-                    infos=await self.toss('/api/v1/stocks',{'symbols':','.join(BY_SYMBOL)})
-                    self.cache[key]={s['symbol']:s for s in infos}
-                except (HTTPException,TypeError,KeyError):
-                    self.cache[key]={}
-                self.cache[key+':until']=time.time()+300
             gate=asyncio.Semaphore(3)
             async def one(q):
                 async with gate:
                     basis=await self.valuation_basis(q['symbol'])
-                    info=self.cache[key].get(q['symbol'],{})
-                    return {'symbol':q['symbol'],**ratios(q['price'],basis,info.get('sharesOutstanding'))}
+                    return {'symbol':q['symbol'],**ratios(q['price'],basis)}
             return await asyncio.gather(*(one(q) for q in quotes))
 
     async def financials(self, symbol):
@@ -258,6 +254,22 @@ class Market:
             return result
         except (httpx.HTTPError, KeyError, ValueError):
             raise HTTPException(502, 'OpenDART 재무제표 연결에 실패했습니다.')
+
+    async def clusters(self):
+        key='clusters:'+settings.dart_business_year+('live' if settings.opendart_api_key else 'sample')
+        async with self.cluster_lock:
+            if self.cache.get(key+':until',0)>time.time(): return self.cache[key]
+            gate=asyncio.Semaphore(3)
+            async def one(stock):
+                async with gate:
+                    try: financials=await self.financials(stock['symbol'])
+                    except HTTPException: financials=None
+                    return {**stock,'financials':financials}
+            model=cluster_companies(await asyncio.gather(*(one(stock) for stock in STOCKS)))
+            model['source']='opendart' if settings.opendart_api_key else 'sample'
+            self.cache[key]=model
+            self.cache[key+':until']=time.time()+(21600 if not model['excluded'] else 300)
+            return model
 
     def is_open(self):
         now=datetime.now(KST)
