@@ -74,6 +74,9 @@ async def logout(request:Request,response:Response):
 @router.get('/market')
 async def quotes(): return {'stocks':await market.quotes(),'source':source(),'market_open':await market.trading_open()}
 
+@router.get('/market/changes')
+async def changes(): return {'items':await market.changes()}
+
 @router.get('/market/valuations')
 async def valuations(): return {'items':await market.valuations()}
 
@@ -117,7 +120,7 @@ async def similar(symbol:str):
             group=[v for s,v in vectors.items() if labels[s]==i]
             if group: centers[i]=[sum(v[j] for v in group)/len(group) for j in range(3)]
     candidates=sorted([s for s in vectors if s!=symbol],key=lambda s:(labels[s]!=labels[symbol],dist(vectors[s],vectors[symbol])))[:3]
-    return {'items':[{'symbol':s,'name':BY_SYMBOL[s]['name'],'same_cluster':labels[s]==labels[symbol],'distance':round(dist(vectors[s],vectors[symbol])**.5,2)} for s in candidates],'source':'live' if settings.opendart_api_key else 'sample','method':'순이익률·기말자본 대비 이익률·부채비율 표준화 / K-means 3개 군집 / 8개 기업 내 비교 (기말자본 대비 이익률은 ROE와 다름)'}
+    return {'items':[{'symbol':s,'name':BY_SYMBOL[s]['name'],'same_cluster':labels[s]==labels[symbol],'distance':round(dist(vectors[s],vectors[symbol])**.5,2)} for s in candidates],'source':'live' if settings.opendart_api_key else 'sample','method':f'순이익률·기말자본 대비 이익률·부채비율 표준화 / K-means 3개 군집 / {len(STOCKS)}개 기업 내 비교 (기말자본 대비 이익률은 ROE와 다름)'}
 
 @router.get('/portfolio')
 async def portfolio(user=Depends(current_user)):

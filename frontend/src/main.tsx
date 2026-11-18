@@ -16,6 +16,8 @@ type Modal={type:'auth'|'start'|'stock'|'lesson'|'repay'|'settings'|'info';symbo
 function App(){
   const [page,setPage]=useState('home');
   const marketLoad=useRef(0);
+  const marketLoading=useRef(false);
+  const changesLoading=useRef(false);
   const [config,setConfig]=useState<Config>();
   const [stocks,setStocks]=useState<Stock[]>([]);
   const [user,setUser]=useState<User|null>(null);
@@ -36,6 +38,8 @@ function App(){
   const notify=(s:string)=>setNotice(s);
   async function loadAccount(){const d=await api<{account:Account|null}>('/portfolio');setAccount(d.account);}
   async function loadMarket(){
+    if(marketLoading.current)return;
+    marketLoading.current=true;
     const ticket=++marketLoad.current;
     try{
       const d=await api<{stocks:Stock[];market_open:boolean}>('/market');
@@ -43,6 +47,12 @@ function App(){
       setStocks(old=>d.stocks.map(s=>{const previous=old.find(p=>p.symbol===s.symbol&&p.price===s.price);return previous?.valuation?{...s,per:previous.per,pbr:previous.pbr,valuation:previous.valuation}:s;}));
       setError('');setConfig(c=>c?{...c,market_open:d.market_open}:c);
       if(d.stocks.some(s=>s.source==='toss')){
+        if(!changesLoading.current){
+          changesLoading.current=true;
+          api<{items:{symbol:string;price:number;change:number|null}[]}>('/market/changes').then(v=>{
+            setStocks(rows=>rows.map(s=>{const x=v.items.find(x=>x.symbol===s.symbol&&x.price===s.price);return x&&s.source==='toss'?{...s,change:x.change}:s;}));
+          }).catch(()=>{}).finally(()=>{changesLoading.current=false;});
+        }
         api<{items:Valuation[]}>('/market/valuations').then(v=>{
           if(ticket!==marketLoad.current)return;
           setStocks(rows=>rows.map(s=>{const x=v.items.find(x=>x.symbol===s.symbol&&x.price===s.price);return x?{...s,per:x.per,pbr:x.pbr,valuation:x}:s;}));
@@ -52,6 +62,7 @@ function App(){
         });
       }
     }catch(e){if(ticket===marketLoad.current)setError((e as Error).message);}
+    finally{marketLoading.current=false;}
   }
   async function loadRanks(){setRankingLoading(true);setRankingError('');try{const d=await api<{items:Rank[]}>('/ranking?difficulty='+rankFilter);setRanks(d.items);}catch(e){setRankingError((e as Error).message);}finally{setRankingLoading(false);}}
   useEffect(()=>{let alive=true;(async()=>{try{const [c,l]=await Promise.all([api<Config>('/config'),api<Lesson[]>('/lessons')]);if(!alive)return;setConfig(c);setLessons(l);await loadMarket();try{const u=await api<User>('/auth/me');if(alive)setUser(u);}catch{/* New visitor. */}}catch(e){setError((e as Error).message);}finally{if(alive)setReady(true);}})();return()=>{alive=false;};},[]);

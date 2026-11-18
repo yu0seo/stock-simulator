@@ -6,12 +6,15 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.services.market import Market, KST
 from app.services.store import Store
+from app.services.catalog import BY_SYMBOL
 
 def test_toss_token_batch_prices_change_and_chart_contract(monkeypatch):
     monkeypatch.setattr(settings,'data_mode','auto')
     monkeypatch.setattr(settings,'toss_client_id','test-client-id')
     monkeypatch.setattr(settings,'toss_client_secret','test-secret')
     requests=[]
+    async def no_sleep(delay): pass
+    monkeypatch.setattr(asyncio,'sleep',no_sleep)
     now=datetime.now(KST)
     yesterday=(now-timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
     old=yesterday-timedelta(days=1)
@@ -27,7 +30,7 @@ def test_toss_token_batch_prices_change_and_chart_contract(monkeypatch):
         assert request.method=='GET'
         if request.url.path=='/api/v1/prices':
             symbols=request.url.params['symbols'].split(',')
-            assert len(symbols)==8
+            assert len(symbols)==50 and set(symbols)==set(BY_SYMBOL)
             return httpx.Response(200,json={'result':[{'symbol':s,'lastPrice':'80000','timestamp':now.isoformat(),'currency':'KRW'} for s in reversed(symbols)]})
         assert request.url.path=='/api/v1/candles'
         assert request.url.params['interval']=='1d' and request.url.params['adjusted']=='false'
@@ -37,16 +40,21 @@ def test_toss_token_batch_prices_change_and_chart_contract(monkeypatch):
     m=Market()
     async def run():
         rows=await m.quotes()
-        assert len(rows)==8 and all(r['source']=='toss' and r['price']==80000 for r in rows)
-        assert all(r['change']==25 and r['per'] is None and r['pbr'] is None for r in rows)
+        assert len(rows)==50 and all(r['source']=='toss' and r['price']==80000 for r in rows)
+        assert all(r['change'] is None and r['per'] is None and r['pbr'] is None for r in rows)
+        assert await m.quotes()==rows
+        assert all(r['change']==25 for r in await m.changes())
         chart=await m.chart('005930')
         assert chart['source']=='toss' and chart['points'][0]['value']==63000
         assert chart['points'][-1]['value']==79000
-        assert await m.quotes()==rows
+        m.cache['quotes_until']=0
+        refreshed=await m.quotes()
+        assert all(r['price']==80000 and r['change']==25 for r in refreshed)
+        assert await m.quotes()==refreshed
     asyncio.run(run())
     assert sum(r.url.path=='/oauth2/token' for r in requests)==1
-    assert sum(r.url.path=='/api/v1/prices' for r in requests)==1
-    assert sum(r.url.path=='/api/v1/candles' for r in requests)==8
+    assert sum(r.url.path=='/api/v1/prices' for r in requests)==2
+    assert sum(r.url.path=='/api/v1/candles' for r in requests)==50
 
 def test_dart_units_missing_metrics_and_request(monkeypatch):
     monkeypatch.setattr(settings,'opendart_api_key','test-key')

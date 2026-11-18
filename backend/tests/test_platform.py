@@ -121,12 +121,13 @@ def test_market_mode_change_protected(client,monkeypatch):
 
 def test_data_and_cluster_contracts(client):
     stocks=client.get('/api/market').json()['stocks']
-    assert len(stocks)==8 and all(s['source']=='sample' for s in stocks)
+    assert len(stocks)==50 and all(s['source']=='sample' for s in stocks)
     chart=client.get('/api/market/005930/chart').json()
     assert chart['points'][-1]['value']==stocks[0]['price']
     f=client.get('/api/companies/005930/financials').json()
     assert f['source']=='sample'
     similar=client.get('/api/companies/005930/similar').json()
+    assert '50개 기업 내 비교' in similar['method']
     assert len(similar['items'])==3 and '005930' not in [x['symbol'] for x in similar['items']]
 
 def test_csrf_origin(client):
@@ -134,7 +135,7 @@ def test_csrf_origin(client):
 
 def test_valuation_endpoint_labels_samples(client):
     data=client.get('/api/market/valuations').json()['items']
-    assert len(data)==8 and all(x['source']=='sample' and x['year'] is None for x in data)
+    assert len(data)==50 and all(x['source']=='sample' and x['year'] is None for x in data)
     assert data[0]['per']==13.2 and data[0]['pbr']==1.15
 
 def test_live_provider_failure_never_uses_sample(client,monkeypatch):
@@ -153,3 +154,23 @@ def test_expired_game_rejects_trade_and_rewards(client):
     asyncio.run(store.save(uid,a,v))
     assert client.post('/api/trades',json={'symbol':'005930','side':'buy','quantity':1}).status_code==400
     assert client.post('/api/lessons/per/answer',json={'answer':1}).status_code==400
+
+
+def test_expanded_universe_supports_details_and_trades(client):
+    from app.services.catalog import STOCKS, BY_SYMBOL
+    assert len(STOCKS)==len(BY_SYMBOL)==50
+    assert len({s['corp'] for s in STOCKS})==50
+    assert all(len(s['symbol'])==6 and s['symbol'].isdigit() and len(s['corp'])==8 and s['corp'].isdigit() for s in STOCKS)
+    for stock in STOCKS[8:]:
+        symbol=stock['symbol']
+        financial=client.get(f'/api/companies/{symbol}/financials')
+        assert financial.status_code==200 and financial.json()['source']=='sample'
+        chart=client.get(f'/api/market/{symbol}/chart')
+        assert chart.status_code==200 and chart.json()['points'][-1]['value']==stock['price']
+    start(client)
+    symbol=STOCKS[-1]['symbol']
+    for side in ('buy','sell'):
+        result=client.post('/api/trades',json={'symbol':symbol,'side':side,'quantity':1})
+        assert result.status_code==200
+    account=client.get('/api/portfolio').json()['account']
+    assert account['positions']==[] and len(account['trades'])==2

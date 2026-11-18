@@ -18,6 +18,7 @@ class Market:
         self.lock = asyncio.Lock()
         self.request_lock = asyncio.Lock()
         self.valuation_lock = asyncio.Lock()
+        self.change_lock = asyncio.Lock()
 
     async def toss(self, path, params):
         """Server-side read-only Toss adapter. Never calls account or order APIs."""
@@ -110,11 +111,9 @@ class Market:
                         if q['currency']!='KRW': raise ValueError('Unsupported currency')
                         price=self.price(q['lastPrice'])
                         quote_time=q.get('timestamp')
-                        quote_day=self.timestamp(quote_time).date() if quote_time is not None else now.date()
-                        candles=await self.candles(stock['symbol'])
-                        previous=[p for p in candles if p['date']<quote_day.isoformat()]
-                        previous_close=previous[-1]['value'] if previous else None
-                        row.update(price=price,change=round((price/previous_close-1)*100,4) if previous_close else None,per=None,pbr=None,quote_at=quote_time)
+                        key='candles:'+stock['symbol']
+                        candles=self.cache.get(key,[]) if self.cache.get(key+':until',0)>time.time() else []
+                        row.update(price=price,change=self.price_change(price,quote_time,candles),per=None,pbr=None,quote_at=quote_time)
                     except HTTPException:
                         raise
                     except (httpx.HTTPError, KeyError, ValueError,TypeError):
@@ -125,6 +124,26 @@ class Market:
                 rows.append(row)
             self.cache.update(quotes=rows, quotes_until=time.time()+10)
             return rows
+
+    @classmethod
+    def price_change(cls,price,quote_time,candles):
+        quote_day=cls.timestamp(quote_time).date() if quote_time is not None else datetime.now(KST).date()
+        previous=[p for p in candles if p['date']<quote_day.isoformat()]
+        previous_close=previous[-1]['value'] if previous else None
+        return round((price/previous_close-1)*100,4) if previous_close else None
+
+    async def changes(self):
+        async with self.change_lock:
+            quotes=await self.quotes()
+            if not settings.live_market: return quotes
+            items=[]
+            for quote in quotes:
+                try:
+                    candles=await self.candles(quote['symbol'])
+                except HTTPException:
+                    candles=[]
+                items.append({'symbol':quote['symbol'],'price':quote['price'],'change':self.price_change(quote['price'],quote['quote_at'],candles)})
+            return items
 
     @staticmethod
     def number(value):

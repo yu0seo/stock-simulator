@@ -74,7 +74,58 @@ def test_last_trading_day_change_on_weekend_or_holiday(monkeypatch,live):
             return [{'symbol':s,'lastPrice':'80000','currency':'KRW','timestamp':stamp.isoformat()} for s in BY_SYMBOL]
         return {'candles':[{'timestamp':stamp.isoformat(),'closePrice':'80000','volume':'10','currency':'KRW'},{'timestamp':older.isoformat(),'closePrice':'64000','volume':'10','currency':'KRW'}]}
     monkeypatch.setattr(live,'toss',fake)
-    assert all(r['change']==25 for r in asyncio.run(live.quotes()))
+    assert all(r['change']==25 for r in asyncio.run(live.changes()))
+
+def test_chart_failure_does_not_hide_current_prices(monkeypatch,live):
+    stamp=datetime.now(KST)
+    older=stamp-timedelta(days=1)
+    calls=[]
+    async def fake(path,params):
+        calls.append(path)
+        if path=='/api/v1/prices':
+            return [{'symbol':s,'lastPrice':'80000','currency':'KRW','timestamp':stamp.isoformat()} for s in BY_SYMBOL]
+        if params['symbol']=='005930':
+            raise HTTPException(502,'토스증권 API 요청 한도에 도달했어요.')
+        return {'candles':[{'timestamp':older.isoformat(),'closePrice':'64000','volume':'10','currency':'KRW'}]}
+    monkeypatch.setattr(live,'toss',fake)
+    async def run():
+        rows=await live.quotes()
+        assert len(rows)==len(BY_SYMBOL)
+        assert all(r['price']==80000 and r['source']=='toss' and r['quote_at']==stamp.isoformat() for r in rows)
+        assert calls==['/api/v1/prices']
+        assert all(r['change'] is None for r in rows)
+        changes=await live.changes()
+        assert next(r for r in changes if r['symbol']=='005930')['change'] is None
+        assert all(r['change']==25 for r in changes if r['symbol']!='005930')
+        with pytest.raises(HTTPException):
+            await live.chart('005930')
+    asyncio.run(run())
+
+
+def test_pending_daily_changes_do_not_block_price_refresh(monkeypatch,live):
+    async def run():
+        started=asyncio.Event()
+        release=asyncio.Event()
+        async def fake(path,params):
+            assert path=='/api/v1/prices'
+            return [{'symbol':s,'lastPrice':'80000','currency':'KRW'} for s in BY_SYMBOL]
+        async def candles(symbol):
+            started.set()
+            await release.wait()
+            return []
+        monkeypatch.setattr(live,'toss',fake)
+        monkeypatch.setattr(live,'candles',candles)
+        pending=asyncio.create_task(live.changes())
+        try:
+            await asyncio.wait_for(started.wait(),1)
+            live.cache['quotes_until']=0
+            rows=await asyncio.wait_for(live.quotes(),1)
+            assert len(rows)==len(BY_SYMBOL) and all(r['price']==80000 for r in rows)
+        finally:
+            release.set()
+            await pending
+    asyncio.run(run())
+
 
 def test_holiday_calendar_and_cache(monkeypatch,live):
     calls=[]
